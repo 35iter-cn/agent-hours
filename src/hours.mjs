@@ -24,7 +24,7 @@ const DIGEST_DIR = join(CFG_DIR, "digest");
 const LOG_DIR = join(HOME, ".config/taskradar/logs/hours");
 const CLOCK_ENV = join(HOME, ".config/agent-hours/clock.env");
 
-async function loadJudge(spec = {}) {
+export async function loadJudge(spec = {}) {
   const envFile = spec.envFile ? String(spec.envFile).replace(/^~/, HOME) : "";
   const env = { ...process.env, ...(envFile ? readEnvFile(envFile) : {}) };
   const type = spec.type ?? "jev";
@@ -196,7 +196,6 @@ export function buildUnits(records, { gapMs = DEFAULTS.gapMinutes * 60_000 } = {
     unit.sessionFile = unit.runs.find((run) => run.sessionFile)?.sessionFile ?? "";
     unit.cwd = unit.runs.find((run) => run.cwd)?.cwd ?? "";
     unit.sessionName = unit.runs.find((run) => run.sessionName)?.sessionName ?? "";
-    unit.source = unit.runs.find((run) => run.source)?.source ?? null;
     unit.paths = normalizePaths(unit.runs.flatMap((run) => run.paths ?? []));
   }
   return units.sort((a, b) => b.startedAt - a.startedAt);
@@ -297,13 +296,11 @@ export function sessionContext(unit) {
   if (name) lines.push(`会话名：${name.slice(0, CONTEXT_NAME_LIMIT)}`);
   const repos = reposOf(unit?.paths ?? [], unit?.cwd ?? "");
   const paths = (Array.isArray(unit?.paths) ? unit.paths : []).slice(0, CONTEXT_PATH_LIMIT);
-  const source = String(unit?.source ?? "").trim();
-  if (!lines.length && !repos.length && !paths.length && !source) return "";
+  if (!lines.length && !repos.length && !paths.length) return "";
   const compose = (withPaths) => {
     const out = ["【会话上下文】", ...lines];
     if (repos.length) out.push(`涉及仓库：${repos.join("、")}`);
     if (withPaths && paths.length) out.push(`涉及路径：${paths.join("、")}`);
-    if (source) out.push(`来源：${source}`);
     return out.join("\n");
   };
   const full = compose(true);

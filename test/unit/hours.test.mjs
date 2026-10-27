@@ -118,7 +118,7 @@ test("unit state carries requests then outputs and truncates each to 1200 chars"
   const state = unitState(unit);
   assert.ok(state.startsWith("【用户请求】\n"));
   assert.ok(state.includes("\n\n【agent 产出】\n"));
-  assert.ok(state.length <= 1200 * 2 + 80);
+  assert.ok(state.length <= 1200 * 2 + 40);
 });
 
 test("unit hash changes when a new run joins the unit", () => {
@@ -1019,8 +1019,8 @@ test("sessionContext renders name, repos, paths and source without a working-dir
   assert.ok(context.includes("会话名：修复 dry-run"));
   assert.ok(context.includes(`涉及仓库：${repo}`));
   assert.ok(context.includes(`涉及路径：${file}`));
-  assert.ok(context.includes("来源：relay"));
   assert.equal(context.includes("工作目录"), false);
+  assert.equal(context.includes("来源"), false);
   assert.equal(sessionContext({}), "");
   assert.equal(sessionContext({ sessionName: "只有名字" }), "【会话上下文】\n会话名：只有名字");
 });
@@ -1033,7 +1033,6 @@ test("sessionContext drops paths before exceeding the 400 character budget", () 
   });
   assert.ok(context.length <= 400, `context was ${context.length}`);
   assert.equal(context.includes("涉及路径"), false);
-  assert.ok(context.includes("来源：relay"));
 });
 
 test("hydrateContext backfills cwd and session name from the session file", () => {
@@ -1060,7 +1059,7 @@ test("unit state appends the session context and keeps the hashed part unchanged
   const [unit] = buildUnits(records);
   const state = unitState(unit);
   assert.ok(state.includes("\n\n【会话上下文】\n会话名：修复 dry-run"));
-  assert.ok(state.includes("来源：interactive"));
+  assert.equal(state.includes("来源："), false);
   const bare = buildUnits([rec("2026-10-24T01:00:00.000Z", 5)])[0];
   assert.equal(unitState(bare).includes("会话名"), false);
   assert.equal(unitHash(unit), unitHash(bare));
