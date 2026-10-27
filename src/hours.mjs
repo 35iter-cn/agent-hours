@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
 import { repairLedger } from "./repair.mjs";
+import { createReporter } from "./reporter.mjs";
 import { buildPlan, CLOCK_DEFAULTS, dayKey, groupByDay, pruneMissing, pruneSynced } from "./clock.mjs";
 import { createClockClient, pickActivity } from "./clock-client.mjs";
 
@@ -20,15 +21,15 @@ const DECISIONS_FILE = join(CFG_DIR, "decisions.json");
 const REVIEW_DIR = join(CFG_DIR, "review");
 const DIGEST_DIR = join(CFG_DIR, "digest");
 const LOG_DIR = join(HOME, ".config/taskradar/logs/hours");
-const RELAY_CONFIG_DIR = process.env.AGENT_RELAY_CONFIG_DIR ?? join(HOME, ".config/agent-relay");
-const JEV_ENV = existsSync(join(RELAY_CONFIG_DIR, "jev.env")) ? join(RELAY_CONFIG_DIR, "jev.env") : join(HOME, ".config/taskradar/jev.env");
 const CLOCK_ENV = join(HOME, ".config/agent-hours/clock.env");
-const RELAY_HOME = process.env.AGENT_RELAY_HOME ?? join(HOME, "code/agent-relay");
-const RELAY_ENTRY = join(RELAY_HOME, "src/cli.mjs");
 
-async function loadJudge() {
-  const { createJev } = await import(join(RELAY_HOME, "src/judgment/jev.mjs"));
-  return createJev({ env: { ...process.env, ...readEnvFile(JEV_ENV) } });
+async function loadJudge(spec = {}) {
+  const envFile = spec.envFile ? String(spec.envFile).replace(/^~/, HOME) : "";
+  const env = { ...process.env, ...(envFile ? readEnvFile(envFile) : {}) };
+  const type = spec.type ?? "jev";
+  if (type !== "jev") throw new Error(`unknown judge type: ${type}`);
+  const { createJev } = await import("./judge/jev.mjs");
+  return createJev({ env, ...(spec.baseUrl ? { baseUrl: spec.baseUrl } : {}) });
 }
 
 export const DEFAULTS = {
@@ -38,7 +39,9 @@ export const DEFAULTS = {
   marginMin: 0.1,
   reviewLongRunHours: 4,
   maxJudgeCallsPerRun: 60,
-  notify: { platform: "feishu", enabled: true },
+  notify: { platform: null, enabled: true },
+  reporter: { type: "none", enabled: false },
+  judge: { type: "jev", envFile: "~/.config/agent-hours/jev.env" },
   repair: { enabled: true, staleMinutes: 60 },
   clock: { ...CLOCK_DEFAULTS },
 };
@@ -535,17 +538,10 @@ export function formatReport(fresh, { tz, now = Date.now(), clock = null, today 
   return lines.join("\n");
 }
 
-function notifyFeishu(text, { platform }) {
-  const chunks = chunkMessage(text);
-  const results = chunks.map((chunk) =>
-    spawnSync(BUN_BIN, [RELAY_ENTRY, "notice", "emit", "--platform", platform, "--text", chunk], { encoding: "utf8", timeout: 30_000 }),
-  );
-  const failed = results.find((result) => result.status !== 0);
-  return {
-    ok: !failed,
-    chunks: chunks.length,
-    output: failed ? `${failed.stdout ?? ""}${failed.stderr ?? ""}`.trim() : "",
-  };
+function defaultReporter(cfg) {
+  const configured = cfg.reporter ?? (cfg.notify?.platform ? { type: "command", command: [] } : { type: "none" });
+  const reporter = createReporter(configured, { log: (line) => process.stderr.write(`[hours] ${line}\n`) });
+  return async (text) => reporter(chunkMessage(text));
 }
 
 export function chunkMessage(text, limit = NOTIFY_CHUNK_CHARS) {
@@ -643,7 +639,7 @@ export async function run({
   judge = null,
   dryRun = false,
   notify = true,
-  notifyImpl = notifyFeishu,
+  notifyImpl = null,
   logDir = join(dir, "logs"),
   budgetMs = ROUND_BUDGET_MS,
   dryRunClock = false,
@@ -653,7 +649,9 @@ export async function run({
   const cfg = loadConfig(dir);
   const decisionsFile = join(dir, "decisions.json");
   const cache = readDecisions(decisionsFile);
-  const engine = judge ?? (await loadJudge());
+  const engine = judge ?? (await loadJudge(cfg.judge));
+  const send = notifyImpl ?? defaultReporter(cfg);
+  const canSend = Boolean(notifyImpl) || (cfg.reporter?.enabled === true && (cfg.reporter?.type ?? "none") !== "none");
 
   const windowStart = now - LEDGER_WINDOW_MS;
   const rows = readRecords(join(dir, "ledger"), { now });
@@ -743,10 +741,10 @@ export async function run({
   let delivered = false;
   if (!dryRun) {
     writeDecisions(decisionsFile, pruneDecisions(cache, { now }));
-    if (report && notify && cfg.notify.enabled && worthNotifying) {
-      const sent = notifyImpl(report, { platform: cfg.notify.platform });
+    if (report && notify && cfg.notify?.enabled !== false && canSend && worthNotifying) {
+      const sent = await send(report);
       delivered = sent.ok;
-      appendEvent({ event: "notify", platform: cfg.notify.platform, ok: sent.ok, chars: report.length, units: fresh.length, ...(sent.ok ? {} : { output: String(sent.output ?? "") }) }, { dir: logDir, now, tz: cfg.tz });
+      appendEvent({ event: "notify", platform: cfg.notify?.platform ?? null, reporter: cfg.reporter?.type ?? "none", ok: sent.ok, chars: report.length, units: fresh.length, ...(sent.ok ? {} : { output: String(sent.output ?? "") }) }, { dir: logDir, now, tz: cfg.tz });
       if (!sent.ok) log(`[error] notify: ${sent.output}`);
       else {
         for (const item of fresh) cache.units[item.unit.key].notifiedSig = item.sig;
