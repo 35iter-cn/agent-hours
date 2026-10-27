@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -27,6 +27,10 @@ import {
   setOverride,
   unitHash,
   unitState,
+  hydrateContext,
+  repoRoot,
+  reposOf,
+  sessionContext,
   DEFAULTS,
 } from "../../src/hours.mjs";
 
@@ -44,6 +48,9 @@ function rec(startIso, minutes, extra = {}) {
     userText: extra.userText ?? "干点活",
     output: extra.output ?? "干完了",
     aborted: extra.aborted ?? false,
+    cwd: extra.cwd ?? "",
+    sessionName: extra.sessionName ?? "",
+    paths: extra.paths ?? [],
   };
 }
 
@@ -111,7 +118,7 @@ test("unit state carries requests then outputs and truncates each to 1200 chars"
   const state = unitState(unit);
   assert.ok(state.startsWith("【用户请求】\n"));
   assert.ok(state.includes("\n\n【agent 产出】\n"));
-  assert.ok(state.length <= 1200 * 2 + 40);
+  assert.ok(state.length <= 1200 * 2 + 80);
 });
 
 test("unit hash changes when a new run joins the unit", () => {
@@ -979,4 +986,82 @@ test("TC-S2 a stalled run counts, a plain aborted run does not", () => {
   assert.equal(units.length, 1);
   assert.equal(units[0].runs.length, 1);
   assert.equal(units[0].runs[0].startedAt, Date.parse(stalled.startedAt));
+});
+
+function tempRepo() {
+  const root = mkdtempSync(path.join(os.tmpdir(), "agent-hours-repo-"));
+  const repo = path.join(root, "repo");
+  mkdirSync(path.join(repo, "src"), { recursive: true });
+  mkdirSync(path.join(repo, ".git"));
+  return { root, repo, file: path.join(repo, "src", "a.mjs") };
+}
+
+test("repoRoot walks up to .git and caches the answer per directory", () => {
+  const { root, repo, file } = tempRepo();
+  assert.equal(repoRoot(path.dirname(file)), repo);
+  rmSync(path.join(repo, ".git"), { recursive: true, force: true });
+  assert.equal(repoRoot(path.dirname(file)), repo);
+  assert.equal(repoRoot(root), null);
+});
+
+test("reposOf dedupes repositories from touched paths and falls back to cwd", () => {
+  const first = tempRepo();
+  const second = tempRepo();
+  assert.deepEqual(reposOf([first.file, second.file, first.file], ""), [first.repo, second.repo]);
+  assert.deepEqual(reposOf([], first.repo), [first.repo]);
+  assert.deepEqual(reposOf(["/tmp/no-repo-here/a.mjs"], ""), []);
+});
+
+test("sessionContext renders name, repos, paths and source without a working-directory line", () => {
+  const { repo, file } = tempRepo();
+  const context = sessionContext({ sessionName: "修复 dry-run", cwd: "/home/someone", paths: [file], source: "relay" });
+  assert.ok(context.startsWith("【会话上下文】\n"));
+  assert.ok(context.includes("会话名：修复 dry-run"));
+  assert.ok(context.includes(`涉及仓库：${repo}`));
+  assert.ok(context.includes(`涉及路径：${file}`));
+  assert.ok(context.includes("来源：relay"));
+  assert.equal(context.includes("工作目录"), false);
+  assert.equal(sessionContext({}), "");
+  assert.equal(sessionContext({ sessionName: "只有名字" }), "【会话上下文】\n会话名：只有名字");
+});
+
+test("sessionContext drops paths before exceeding the 400 character budget", () => {
+  const context = sessionContext({
+    sessionName: "名".repeat(60),
+    paths: ["/tmp/路径".concat("长".repeat(150)), "/tmp/另一条".concat("多".repeat(150)), "/tmp/第三条".concat("字".repeat(150))],
+    source: "relay",
+  });
+  assert.ok(context.length <= 400, `context was ${context.length}`);
+  assert.equal(context.includes("涉及路径"), false);
+  assert.ok(context.includes("来源：relay"));
+});
+
+test("hydrateContext backfills cwd and session name from the session file", () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), "agent-hours-session-"));
+  const file = path.join(dir, "s.jsonl");
+  writeFileSync(
+    file,
+    [
+      JSON.stringify({ type: "session", version: 3, id: "s", timestamp: "2026-10-27T10:00:00.000Z", cwd: "/tmp/agent-hours-session-cwd" }),
+      JSON.stringify({ type: "session_info", id: "x", timestamp: "2026-10-27T10:01:00.000Z", name: "修复 dry-run 跳过账本" }),
+    ].join("\n"),
+  );
+  const hydrated = hydrateContext({ sessionFile: file, userText: "按 1 修" });
+  assert.equal(hydrated.cwd, "/tmp/agent-hours-session-cwd");
+  assert.equal(hydrated.sessionName, "修复 dry-run 跳过账本");
+  assert.equal(hydrated.userText, "按 1 修");
+  assert.deepEqual(hydrateContext({ sessionFile: path.join(dir, "missing.jsonl"), userText: "x" }), { sessionFile: path.join(dir, "missing.jsonl"), userText: "x" });
+  assert.deepEqual(hydrateContext({ cwd: "/kept", sessionName: "kept" }), { cwd: "/kept", sessionName: "kept" });
+});
+
+test("unit state appends the session context and keeps the hashed part unchanged", () => {
+  const { file } = tempRepo();
+  const records = [rec("2026-10-24T01:00:00.000Z", 5, { paths: [file], sessionName: "修复 dry-run" })];
+  const [unit] = buildUnits(records);
+  const state = unitState(unit);
+  assert.ok(state.includes("\n\n【会话上下文】\n会话名：修复 dry-run"));
+  assert.ok(state.includes("来源：interactive"));
+  const bare = buildUnits([rec("2026-10-24T01:00:00.000Z", 5)])[0];
+  assert.equal(unitState(bare).includes("会话名"), false);
+  assert.equal(unitHash(unit), unitHash(bare));
 });

@@ -1,11 +1,12 @@
 #!/usr/bin/env bun
 import { createHash } from "node:crypto";
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { normalizePaths } from "./ledger.mjs";
 import { repairLedger } from "./repair.mjs";
 import { createReporter } from "./reporter.mjs";
 import { buildPlan, CLOCK_DEFAULTS, dayKey, groupByDay, pruneMissing, pruneSynced } from "./clock.mjs";
@@ -159,7 +160,17 @@ export function buildUnits(records, { gapMs = DEFAULTS.gapMinutes * 60_000 } = {
     if (!String(record.userText ?? "").trim()) continue;
     const startedAt = Date.parse(record.startedAt);
     if (Number.isNaN(startedAt)) continue;
-    const run = { startedAt, durationMs: Number(record.durationMs) || 0, userText: record.userText, output: record.output ?? "", source: record.source ?? null };
+    const run = {
+      startedAt,
+      durationMs: Number(record.durationMs) || 0,
+      userText: record.userText,
+      output: record.output ?? "",
+      source: record.source ?? null,
+      sessionFile: String(record.sessionFile ?? ""),
+      cwd: String(record.cwd ?? ""),
+      sessionName: String(record.sessionName ?? ""),
+      paths: Array.isArray(record.paths) ? record.paths : [],
+    };
     run.endedAt = startedAt + run.durationMs;
     const bucket = bySession.get(record.sessionId) ?? [];
     bucket.push(run);
@@ -181,13 +192,131 @@ export function buildUnits(records, { gapMs = DEFAULTS.gapMinutes * 60_000 } = {
     }
     if (unit) units.push(unit);
   }
+  for (const unit of units) {
+    unit.sessionFile = unit.runs.find((run) => run.sessionFile)?.sessionFile ?? "";
+    unit.cwd = unit.runs.find((run) => run.cwd)?.cwd ?? "";
+    unit.sessionName = unit.runs.find((run) => run.sessionName)?.sessionName ?? "";
+    unit.source = unit.runs.find((run) => run.source)?.source ?? null;
+    unit.paths = normalizePaths(unit.runs.flatMap((run) => run.paths ?? []));
+  }
   return units.sort((a, b) => b.startedAt - a.startedAt);
+}
+
+const CONTEXT_LIMIT = 400;
+const CONTEXT_NAME_LIMIT = 60;
+const CONTEXT_PATH_LIMIT = 3;
+const CONTEXT_REPO_LIMIT = 2;
+const SESSION_READ_LIMIT = 4 * 1024 * 1024;
+const sessionInfoCache = new Map();
+const repoRootCache = new Map();
+
+export function repoRoot(dir) {
+  const start = String(dir ?? "");
+  if (!start) return null;
+  if (repoRootCache.has(start)) return repoRootCache.get(start);
+  let current = start;
+  let found = null;
+  for (let depth = 0; depth < 8; depth += 1) {
+    if (existsSync(join(current, ".git"))) {
+      found = current;
+      break;
+    }
+    const parent = dirname(current);
+    if (parent === current) break;
+    current = parent;
+  }
+  repoRootCache.set(start, found);
+  return found;
+}
+
+export function reposOf(paths = [], cwd = "") {
+  const out = [];
+  for (const path of Array.isArray(paths) ? paths : []) {
+    const root = repoRoot(dirname(String(path)));
+    if (root && !out.includes(root)) out.push(root);
+    if (out.length >= CONTEXT_REPO_LIMIT) break;
+  }
+  if (!out.length && cwd) {
+    const root = repoRoot(String(cwd));
+    if (root) out.push(root);
+  }
+  return out;
+}
+
+function readSessionInfo(file) {
+  const target = String(file ?? "");
+  if (!target) return {};
+  try {
+    const info = statSync(target);
+    const cached = sessionInfoCache.get(target);
+    if (cached && cached.mtimeMs === info.mtimeMs && cached.size === info.size) return cached;
+    const length = Math.min(info.size, SESSION_READ_LIMIT);
+    const buffer = Buffer.alloc(length);
+    const fd = openSync(target, "r");
+    try {
+      readSync(fd, buffer, 0, length, 0);
+    } finally {
+      closeSync(fd);
+    }
+    let cwd = null;
+    let sessionName = null;
+    for (const line of buffer.toString("utf8").split("\n")) {
+      if (!line.trim()) continue;
+      let record;
+      try {
+        record = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (record?.type === "session" && typeof record.cwd === "string" && !cwd) cwd = record.cwd;
+      if (record?.type === "session_info" && typeof record.name === "string" && record.name) sessionName = record.name;
+    }
+    const result = { mtimeMs: info.mtimeMs, size: info.size, cwd, sessionName };
+    sessionInfoCache.set(target, result);
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+export function hydrateContext(record) {
+  if (!record) return record;
+  if (record.cwd && record.sessionName) return record;
+  const info = readSessionInfo(record.sessionFile);
+  if (!info.cwd && !info.sessionName) return record;
+  return {
+    ...record,
+    cwd: record.cwd || info.cwd || "",
+    sessionName: record.sessionName || info.sessionName || "",
+  };
+}
+
+export function sessionContext(unit) {
+  const lines = [];
+  const name = String(unit?.sessionName ?? "").trim();
+  if (name) lines.push(`会话名：${name.slice(0, CONTEXT_NAME_LIMIT)}`);
+  const repos = reposOf(unit?.paths ?? [], unit?.cwd ?? "");
+  const paths = (Array.isArray(unit?.paths) ? unit.paths : []).slice(0, CONTEXT_PATH_LIMIT);
+  const source = String(unit?.source ?? "").trim();
+  if (!lines.length && !repos.length && !paths.length && !source) return "";
+  const compose = (withPaths) => {
+    const out = ["【会话上下文】", ...lines];
+    if (repos.length) out.push(`涉及仓库：${repos.join("、")}`);
+    if (withPaths && paths.length) out.push(`涉及路径：${paths.join("、")}`);
+    if (source) out.push(`来源：${source}`);
+    return out.join("\n");
+  };
+  const full = compose(true);
+  if (full.length <= CONTEXT_LIMIT) return full;
+  const withoutPaths = compose(false);
+  return withoutPaths.length <= CONTEXT_LIMIT ? withoutPaths : withoutPaths.slice(0, CONTEXT_LIMIT);
 }
 
 export function unitState(unit) {
   const requests = unit.runs.map((run) => String(run.userText ?? "").trim()).filter(Boolean).join("\n---\n").slice(0, USER_TEXT_LIMIT);
   const outputs = unit.runs.map((run) => String(run.output ?? "").trim()).filter(Boolean).join("\n---\n").slice(0, OUTPUT_LIMIT);
-  return `【用户请求】\n${requests}\n\n【agent 产出】\n${outputs || "(无)"}`;
+  const context = sessionContext(hydrateContext(unit));
+  return `【用户请求】\n${requests}\n\n【agent 产出】\n${outputs || "(无)"}${context ? `\n\n${context}` : ""}`;
 }
 
 export function unitHash(unit) {
