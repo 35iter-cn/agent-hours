@@ -3,7 +3,7 @@ const HOUR_MS = 3_600_000;
 
 export const CLOCK_DEFAULTS = {
   enabled: false,
-  baseUrl: "https://focus.35iter.cn",
+  baseUrl: "",
   activityName: "clock",
   activityId: null,
   minSegmentMinutes: 1,

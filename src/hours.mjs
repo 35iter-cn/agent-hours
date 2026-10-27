@@ -54,19 +54,27 @@ export const PENDING_REASONS = new Set(["nokey", "circuit", "timeout", "http_429
 const REQUEST_PREVIEW = 60;
 const OUTPUT_PREVIEW = 100;
 
-export const JUDGE_INSTRUCTIONS =
-  "判产出物的归属，不判有没有动手、也不判产出量大小。" +
-  "计入：改 MagicDoor 仓库的代码或配置、跑它的测试、查它的数据与日志、操作客户内部系统、" +
-  "写 MagicDoor 的方案 / 计划 / 评估 / 文档。" +
-  "不计入：个人事务、闲聊、只复述上下文或只确认状态；以及自家工具与基建的维护" +
-  "（relay、intake loop、工时账本、Pi 插件、taskradar）和环境搭建 / 排障，" +
-  "即使这一轮交付了一段能跑的代码或一份文档。" +
-  "判定看产出物归谁，不看消息是发给谁、也不看改了几行。";
+export const JUDGE_PROMPT_FILE = join(CFG_DIR, "judge-prompt.json");
 
-export const JUDGE_CRITERIA = {
-  count: "产出物属于 MagicDoor 客户项目，应当计入工时",
-  skip: "产出物不归客户项目：无实质产出、个人事务、闲聊，或自家工具 / 基建维护与环境排障",
+export const JUDGE_DEFAULTS = {
+  instructions: "判断这一轮对话的产出应该计入工时还是跳过。只看产出物归属，不看有没有动手。",
+  criteria: {
+    count: "产出物属于应付费的项目工作",
+    skip: "无实质产出、个人事务，或自家工具与基础设施的维护与排障",
+  },
 };
+
+export function loadJudgePrompt(file = JUDGE_PROMPT_FILE) {
+  try {
+    const parsed = JSON.parse(readFileSync(file, "utf8"));
+    const instructions = String(parsed?.instructions ?? "").trim();
+    const criteria = parsed?.criteria;
+    if (!instructions || !criteria || typeof criteria !== "object") return { ...JUDGE_DEFAULTS };
+    return { instructions, criteria };
+  } catch {
+    return { ...JUDGE_DEFAULTS };
+  }
+}
 
 export function loadConfig(dir = CFG_DIR) {
   const file = join(dir, "config.json");
@@ -183,8 +191,8 @@ export function unitHash(unit) {
   return createHash("sha1").update(`${requests}\u0001${outputs}`).digest("hex").slice(0, 16);
 }
 
-export function promptsVersion() {
-  return createHash("sha1").update(`${JUDGE_INSTRUCTIONS}\u0000${JSON.stringify(JUDGE_CRITERIA)}`).digest("hex").slice(0, 8);
+export function promptsVersion(prompt = loadJudgePrompt()) {
+  return createHash("sha1").update(`${prompt.instructions}\u0000${JSON.stringify(prompt.criteria)}`).digest("hex").slice(0, 8);
 }
 
 export function runState(run) {
@@ -332,6 +340,7 @@ export function aggregateSplit(unit, runs) {
 }
 
 async function splitUnit(unit, { judge, cfg, splits, calls, now, maxCalls }) {
+  const prompt = loadJudgePrompt();
   const runs = [];
   for (const run of unit.runs) {
     const key = runHash(run);
@@ -348,8 +357,8 @@ async function splitUnit(unit, { judge, cfg, splits, calls, now, maxCalls }) {
     const verdict = await judge.judgeChoice({
       id: `hours:run:${key}`,
       state: runState(run),
-      instructions: JUDGE_INSTRUCTIONS,
-      criteria: JUDGE_CRITERIA,
+      instructions: prompt.instructions,
+      criteria: prompt.criteria,
     });
     const result = verdictToResult(verdict, cfg);
     if (!(result.kind === "review" && PENDING_REASONS.has(result.reason))) {
@@ -368,6 +377,7 @@ async function splitUnit(unit, { judge, cfg, splits, calls, now, maxCalls }) {
 }
 
 export async function decideUnit(unit, { judge, cfg = DEFAULTS, now = Date.now(), cache = {}, calls = { n: 0 } } = {}) {
+  const prompt = loadJudgePrompt();
   const units = cache.units ?? cache;
   const splits = cache.splits ?? {};
   const hash = unitHash(unit);
@@ -403,8 +413,8 @@ export async function decideUnit(unit, { judge, cfg = DEFAULTS, now = Date.now()
   const verdict = await judge.judgeChoice({
     id: `hours:${unit.key}`,
     state: unitState(unit),
-    instructions: JUDGE_INSTRUCTIONS,
-    criteria: JUDGE_CRITERIA,
+    instructions: prompt.instructions,
+    criteria: prompt.criteria,
   });
   const result = verdictToResult(verdict, cfg);
   if (result.kind !== "review" || !SPLIT_REASONS.has(result.reason) || !splittable) return { ...result, runs: null };

@@ -532,7 +532,7 @@ test("a manual override wins over both the cached verdict and a fresh judge call
   await run({ now, dir, judge, notifyImpl: () => ({ ok: true }) });
   const key = Object.keys(JSON.parse(readFileSync(path.join(dir, "decisions.json"), "utf8")).units)[0];
 
-  setOverride({ dir, key, kind: "count", note: "MagicDoor 事务（PR 审批状态确认），人工裁定计入", now });
+  setOverride({ dir, key, kind: "count", note: "项目事务（PR 审批状态确认），人工裁定计入", now });
   const second = fakeJudge([]);
   const outcome = await run({ now, dir, judge: second, notifyImpl: () => ({ ok: true }) });
   assert.equal(outcome.fresh.length, 1);
