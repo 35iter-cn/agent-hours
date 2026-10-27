@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync, writeFileSync, rmSync, mkdirSync, existsSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
-import { buildOpenRecord, buildRecord, appendLedger, defaultLedgerDir } from "../src/ledger.mjs";
-import { createClockClient } from "../src/clock-client.mjs";
-import { run } from "../src/hours.mjs";
+import { buildOpenRecord, buildRecord, appendLedger, defaultLedgerDir } from "../../src/ledger.mjs";
+import { createClockClient } from "../../src/clock-client.mjs";
+import { run } from "../../src/hours.mjs";
 
 const HOME = homedir();
 const CFG = join(HOME, ".config/agent-hours");
@@ -44,9 +44,10 @@ test("integration: a ledger fixture is judged and written to clock, then removed
       ...cfgReal,
       clock: { ...cfgReal.clock, enabled: true },
     }, null, 2));
-    const sessionId = "e2e-fixture-session";
-    const startedAt = now - 50 * 60_000;
-    const endedAt = startedAt + 20 * 60_000;
+    const fixture = JSON.parse(readFileSync(new URL("../fixtures/ledger/basic-run.json", import.meta.url), "utf8"));
+    const sessionId = fixture.sessionId;
+    const startedAt = now - fixture.startedMinutesAgo * 60_000;
+    const endedAt = startedAt + fixture.durationMinutes * 60_000;
     appendLedger(buildOpenRecord({ sessionId, sessionFile: join(dir, "session.jsonl"), source: "relay", startedAtMs: startedAt }), { dir: ledgerDir });
     appendLedger(buildRecord({
       sessionId,
@@ -54,8 +55,8 @@ test("integration: a ledger fixture is judged and written to clock, then removed
       source: "relay",
       startedAtMs: startedAt,
       endedAtMs: endedAt,
-      texts: ["修复 order 服务的 goroutine 泄漏，并跑通 go test ./..."],
-      output: "泄漏修好了，go test 全绿",
+      texts: [fixture.userText],
+      output: fixture.output,
     }), { dir: ledgerDir });
 
     const sent = [];
@@ -83,7 +84,7 @@ test("integration: a ledger fixture is judged and written to clock, then removed
     const period = created[0];
     assert.equal(period.activityId, cfgReal.clock.activityId);
     const minutes = (Date.parse(period.end) - Date.parse(period.start)) / 60_000;
-    assert.ok(Math.abs(minutes - 20) <= 1, `clock period should span 20 minutes, got ${minutes}`);
+    assert.ok(Math.abs(minutes - fixture.durationMinutes) <= 1, `clock period should span ${fixture.durationMinutes} minutes, got ${minutes}`);
 
     const removed = await api.remove(period.id);
     assert.equal(removed.ok, true, `cleanup failed: ${removed.code}`);

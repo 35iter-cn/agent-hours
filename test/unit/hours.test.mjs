@@ -28,7 +28,7 @@ import {
   unitHash,
   unitState,
   DEFAULTS,
-} from "../src/hours.mjs";
+} from "../../src/hours.mjs";
 
 const MINUTE = 60_000;
 

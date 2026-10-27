@@ -32,25 +32,16 @@ git clone https://github.com/35iter-cn/agent-hours ~/code/agent-hours
 Nothing identifying lives in this repo: credentials come from an env file or the
 environment (`envFile`, `env:NAME`), and the judging prompt is a user file.
 
-## Verify
+## Test
 
 ```bash
-bun test                                   # 117 cases
-bun src/hours.mjs --dry-run --dry-run-clock # one round, no notices, no Clock writes
+bun run test              # unit: 117 cases, no network
+bun run test:integration  # end to end: real judge + real clock api
 ```
 
-`--dry-run` prints the report instead of sending it; `--dry-run-clock` skips Clock
-writes. `decisions.json` in the config dir caches verdicts per unit hash.
-
-### Integration
-
-`test/integration.hours.test.mjs` runs the whole chain against the real judge and
-the real clock API: it writes a ledger fixture into a temp config dir, runs one
-round, asserts the created clock period and removes it again. It is skipped
-unless asked:
-
-```bash
-AGENT_HOURS_E2E=1 bun test test/integration.hours.test.mjs
-```
-
-Cleanup runs in `finally`, so a failed assertion still removes the test periods.
+`test/unit/` holds the pure cases. `test/integration/hours.e2e.test.mjs` runs the
+whole chain — ledger fixture in `test/fixtures/ledger/` → `run()` → real judge →
+real clock write → reporter stub — then asserts the created period and deletes
+it; cleanup also runs in `finally`, so a failing assertion still leaves no trace
+in the timesheet. It is skipped unless `AGENT_HOURS_E2E=1`, which is why the
+default `bun run test` never touches the network.

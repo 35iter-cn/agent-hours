@@ -1,0 +1,8 @@
+{
+  "sessionId": "e2e-fixture-session",
+  "source": "relay",
+  "startedMinutesAgo": 50,
+  "durationMinutes": 20,
+  "userText": "修复 order 服务的 goroutine 泄漏，并跑通 go test ./...",
+  "output": "泄漏修好了，go test 全绿"
+}

@@ -3,9 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { appendLedger, buildOpenRecord, ledgerFilePath } from "../src/ledger.mjs";
-import { findOpenRun, buildSalvagedRecord, salvageStalledRun } from "../src/salvage.mjs";
-import { buildBeat, writeBeat, readBeat, clearBeat, beatIsStale, heartbeatFile, trimToLastBeat } from "../src/heartbeat.mjs";
+import { appendLedger, buildOpenRecord, ledgerFilePath } from "../../src/ledger.mjs";
+import { findOpenRun, buildSalvagedRecord, salvageStalledRun } from "../../src/salvage.mjs";
+import { buildBeat, writeBeat, readBeat, clearBeat, beatIsStale, heartbeatFile, trimToLastBeat } from "../../src/heartbeat.mjs";
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agent-ledger-"));

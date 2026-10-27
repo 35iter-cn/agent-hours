@@ -16,7 +16,7 @@ import {
   pruneMissing,
   pruneSynced,
   unionSegments,
-} from "../src/clock.mjs";
+} from "../../src/clock.mjs";
 
 const MIN = 60_000;
 const HOUR = 3_600_000;

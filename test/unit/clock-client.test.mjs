@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createClockClient, pickActivity } from "../src/clock-client.mjs";
+import { createClockClient, pickActivity } from "../../src/clock-client.mjs";
 
 function harness(responder) {
   const calls = [];

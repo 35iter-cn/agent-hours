@@ -17,7 +17,7 @@ import {
   summarize,
   MAX_LINE_BYTES,
   STALE_RUN_MS,
-} from "../src/ledger.mjs";
+} from "../../src/ledger.mjs";
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "agent-ledger-"));
