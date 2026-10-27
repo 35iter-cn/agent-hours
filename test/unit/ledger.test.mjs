@@ -17,6 +17,8 @@ import {
   summarize,
   MAX_LINE_BYTES,
   STALE_RUN_MS,
+  CONTEXT_LIMITS,
+  normalizePaths,
 } from "../../src/ledger.mjs";
 
 function tempDir() {
@@ -304,4 +306,95 @@ test("readRecords drops open lines so summary counts stay unchanged", () => {
     summarize(records, { tz: "Asia/Shanghai" }).map((entry) => [entry.day, entry.runs, entry.minutes]),
     [["2026-10-24", 1, 10]],
   );
+});
+
+test("normalizePaths keeps absolute unique paths in order within the limits", () => {
+  const long = `/tmp/${"a".repeat(300)}`;
+  const paths = normalizePaths([
+    "/tmp/repo/a.mjs",
+    "relative/b.mjs",
+    "/tmp/repo/a.mjs",
+    long,
+    "/tmp/repo/c.mjs",
+    "/tmp/repo/d.mjs",
+    "/tmp/repo/e.mjs",
+    "/tmp/repo/f.mjs",
+  ]);
+  assert.deepEqual(paths.slice(0, 3), ["/tmp/repo/a.mjs", long.slice(0, CONTEXT_LIMITS.pathLength), "/tmp/repo/c.mjs"]);
+  assert.equal(paths.length, CONTEXT_LIMITS.paths);
+  assert.equal(paths[1].length, CONTEXT_LIMITS.pathLength);
+  assert.deepEqual(normalizePaths([]), []);
+  assert.deepEqual(normalizePaths(undefined), []);
+});
+
+test("buildRecord carries cwd, sessionName and paths only when present", () => {
+  const bare = buildRecord({ sessionId: "s1", source: "interactive", startedAtMs: 0, endedAtMs: 1000, texts: ["a"] });
+  assert.equal(bare.cwd, undefined);
+  assert.equal(bare.sessionName, undefined);
+  assert.equal(bare.paths, undefined);
+  const full = buildRecord({
+    sessionId: "s1",
+    source: "relay",
+    startedAtMs: 0,
+    endedAtMs: 1000,
+    texts: ["a"],
+    cwd: "/tmp/repo",
+    sessionName: "修复 dry-run",
+    paths: ["/tmp/repo/src/a.mjs"],
+  });
+  assert.equal(full.cwd, "/tmp/repo");
+  assert.equal(full.sessionName, "修复 dry-run");
+  assert.deepEqual(full.paths, ["/tmp/repo/src/a.mjs"]);
+  assert.equal(full.v, 1);
+});
+
+test("buildOpenRecord carries cwd and the session name but never paths", () => {
+  const open = buildOpenRecord({
+    sessionId: "s1",
+    sessionFile: "/s/1.jsonl",
+    source: "relay",
+    startedAtMs: 0,
+    cwd: "/tmp/repo",
+    sessionName: "修复 dry-run",
+  });
+  assert.equal(open.cwd, "/tmp/repo");
+  assert.equal(open.sessionName, "修复 dry-run");
+  assert.equal(open.paths, undefined);
+});
+
+test("the tracker collects touched paths and hands them to the closed record", () => {
+  const clock = fixedClock();
+  const tracker = createRunTracker({ now: clock.now, env: () => ({}) });
+  tracker.begin("按 1 修");
+  tracker.start();
+  tracker.notePath("/tmp/repo/src/a.mjs");
+  tracker.notePath("relative.mjs");
+  tracker.notePath("/tmp/repo/src/a.mjs");
+  clock.advance(1000);
+  const record = tracker.drain({ sessionId: "s1", sessionFile: "/s/1.jsonl", cwd: "/tmp/repo", sessionName: "修复 dry-run" });
+  assert.deepEqual(record.paths, ["/tmp/repo/src/a.mjs"]);
+  assert.equal(record.cwd, "/tmp/repo");
+  assert.equal(record.sessionName, "修复 dry-run");
+});
+
+test("a record over the byte budget drops paths before output", () => {
+  const record = buildRecord({
+    sessionId: "s1",
+    sessionFile: "/s/x.jsonl",
+    source: "relay",
+    startedAtMs: 0,
+    endedAtMs: 1000,
+    texts: ["字".repeat(600)],
+    output: "答".repeat(400),
+    cwd: "/tmp/repo",
+    sessionName: "修复 dry-run",
+    paths: Array.from({ length: CONTEXT_LIMITS.paths }, (_, index) => `/tmp/repo/路径-${index}-${"长".repeat(140)}`),
+  });
+  const line = serializeRecord(record);
+  assert.ok(Buffer.byteLength(line) <= MAX_LINE_BYTES, `line was ${Buffer.byteLength(line)} bytes`);
+  const parsed = JSON.parse(line);
+  assert.equal(parsed.paths, undefined);
+  assert.equal(parsed.cwd, "/tmp/repo");
+  assert.equal(parsed.sessionName, "修复 dry-run");
+  assert.ok(parsed.output.length > 0);
 });

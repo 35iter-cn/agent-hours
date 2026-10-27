@@ -7,6 +7,18 @@ export const USER_TEXT_LIMIT = 600;
 export const OUTPUT_LIMIT = 400;
 export const MAX_LINE_BYTES = 3800;
 export const STALE_RUN_MS = 4 * 60 * 60 * 1000;
+export const CONTEXT_LIMITS = { cwd: 200, sessionName: 60, paths: 5, pathLength: 160 };
+
+export function normalizePaths(paths = []) {
+  const out = [];
+  for (const raw of Array.isArray(paths) ? paths : []) {
+    const value = truncate(String(raw ?? "").trim(), CONTEXT_LIMITS.pathLength);
+    if (!value.startsWith("/") || out.includes(value)) continue;
+    out.push(value);
+    if (out.length >= CONTEXT_LIMITS.paths) break;
+  }
+  return out;
+}
 
 export function truncate(value, limit) {
   const text = typeof value === "string" ? value : "";
@@ -45,6 +57,9 @@ export function buildRecord({
   texts = [],
   output = "",
   aborted = false,
+  cwd = "",
+  sessionName = "",
+  paths = [],
 }) {
   const normalized = normalizeSessionId(sessionId);
   return {
@@ -58,10 +73,22 @@ export function buildRecord({
     userText: truncate(texts.join("\n---\n"), USER_TEXT_LIMIT),
     output: truncate(output, OUTPUT_LIMIT),
     aborted: Boolean(aborted),
+    ...contextFields({ cwd, sessionName, paths }),
   };
 }
 
-export function buildOpenRecord({ sessionId, sessionFile, source, startedAtMs }) {
+function contextFields({ cwd = "", sessionName = "", paths = [] } = {}) {
+  const fields = {};
+  const cwdValue = truncate(String(cwd ?? "").trim(), CONTEXT_LIMITS.cwd);
+  const nameValue = truncate(String(sessionName ?? "").trim(), CONTEXT_LIMITS.sessionName);
+  const pathValues = normalizePaths(paths);
+  if (cwdValue) fields.cwd = cwdValue;
+  if (nameValue) fields.sessionName = nameValue;
+  if (pathValues.length) fields.paths = pathValues;
+  return fields;
+}
+
+export function buildOpenRecord({ sessionId, sessionFile, source, startedAtMs, cwd = "", sessionName = "" }) {
   const normalized = normalizeSessionId(sessionId);
   return {
     v: SCHEMA_VERSION,
@@ -71,6 +98,7 @@ export function buildOpenRecord({ sessionId, sessionFile, source, startedAtMs })
     sessionFile: String(sessionFile ?? ""),
     source,
     startedAt: new Date(startedAtMs).toISOString(),
+    ...contextFields({ cwd, sessionName }),
   };
 }
 
@@ -78,7 +106,8 @@ export function createRunTracker({ now = () => Date.now(), env = () => process.e
   let active = null;
 
   function ensure() {
-    if (!active) active = { startedAtMs: null, texts: [], output: "" };
+    if (!active) active = { startedAtMs: null, texts: [], output: "", paths: [] };
+    if (!Array.isArray(active.paths)) active.paths = [];
     return active;
   }
 
@@ -87,7 +116,7 @@ export function createRunTracker({ now = () => Date.now(), env = () => process.e
       const piece = truncate(text, USER_TEXT_LIMIT).trim();
       const current = ensure();
       if (current.startedAtMs !== null && now() - current.startedAtMs > STALE_RUN_MS) {
-        active = { startedAtMs: null, texts: [], output: "" };
+        active = { startedAtMs: null, texts: [], output: "", paths: [] };
         if (piece) active.texts = [piece];
         return;
       }
@@ -96,6 +125,11 @@ export function createRunTracker({ now = () => Date.now(), env = () => process.e
         return;
       }
       if (piece) current.texts.push(piece);
+    },
+
+    notePath(value) {
+      const current = ensure();
+      current.paths = normalizePaths([...current.paths, value]);
     },
 
     start() {
@@ -111,7 +145,7 @@ export function createRunTracker({ now = () => Date.now(), env = () => process.e
       if (text) active.output = truncate(text, OUTPUT_LIMIT);
     },
 
-    drain({ sessionId, sessionFile, aborted = false, env: envOverride } = {}) {
+    drain({ sessionId, sessionFile, aborted = false, env: envOverride, cwd = "", sessionName = "" } = {}) {
       if (!active || active.startedAtMs === null) {
         active = null;
         return null;
@@ -126,6 +160,9 @@ export function createRunTracker({ now = () => Date.now(), env = () => process.e
         texts: active.texts,
         output: active.output,
         aborted,
+        cwd,
+        sessionName,
+        paths: active.paths,
       });
       active = null;
       return record;
@@ -158,6 +195,9 @@ export function ledgerFilePath(dir, sessionId) {
 export function serializeRecord(record) {
   let candidate = { ...record };
   let line = `${JSON.stringify(candidate)}\n`;
+  if (Buffer.byteLength(line) <= MAX_LINE_BYTES) return line;
+  delete candidate.paths;
+  line = `${JSON.stringify(candidate)}\n`;
   if (Buffer.byteLength(line) <= MAX_LINE_BYTES) return line;
   candidate.output = "";
   line = `${JSON.stringify(candidate)}\n`;
