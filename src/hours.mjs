@@ -1039,10 +1039,11 @@ async function main(argv) {
     }
     return;
   }
-  const repairs = flags.has("no-repair") ? { closed: [], sessions: 0 } : repairLedger({ dir: CFG_DIR });
-  if (repairs.closed.length) process.stderr.write(`[hours] repair closed=${repairs.closed.length} ${repairs.closed.map((row) => `${row.sessionId}:${Math.round(row.durationMs / 60_000)}m`).join(",")}\n`);
   const dryRun = flags.has("dry-run");
   const dryRunClock = flags.has("dry-run-clock");
+  const repairs = flags.has("no-repair") || dryRun ? { closed: [], sessions: 0 } : repairLedger({ dir: CFG_DIR });
+  if (dryRun) process.stderr.write("[hours] repair skipped by dry-run\n");
+  if (repairs.closed.length) process.stderr.write(`[hours] repair closed=${repairs.closed.length} ${repairs.closed.map((row) => `${row.sessionId}:${Math.round(row.durationMs / 60_000)}m`).join(",")}\n`);
   const notify = !flags.has("no-notify");
   const release = acquireLock(join(CFG_DIR, ".lock"));
   if (!release) {
