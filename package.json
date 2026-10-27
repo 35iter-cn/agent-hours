@@ -1,0 +1,12 @@
+{
+  "name": "agent-hours",
+  "version": "0.1.0",
+  "description": "Turn accounting for coding agents: ledger, judging and reporting",
+  "license": "MIT",
+  "type": "module",
+  "keywords": ["pi-package"],
+  "pi": { "extensions": ["./src/extension.ts"] },
+  "bin": { "agent-hours": "./bin/agent-hours.mjs" },
+  "scripts": { "test": "bun test" },
+  "engines": { "bun": ">=1.1" }
+}

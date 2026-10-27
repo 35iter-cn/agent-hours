@@ -1,0 +1,5 @@
+{
+  "reporter": { "id": "none", "type": "none", "enabled": false },
+  "judge": { "provider": "jev", "envFile": "~/.config/agent-hours/jev.env", "promptFile": "~/.config/agent-hours/judge-prompt.md" },
+  "clock": { "enabled": false, "baseUrl": "https://example.invalid" }
+}
