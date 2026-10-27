@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { dirname } from "node:path";
+import { repairLedger } from "./repair.mjs";
 import { buildPlan, CLOCK_DEFAULTS, dayKey, groupByDay, pruneMissing, pruneSynced } from "./clock.mjs";
 import { createClockClient, pickActivity } from "./clock-client.mjs";
 
@@ -38,6 +39,7 @@ export const DEFAULTS = {
   reviewLongRunHours: 4,
   maxJudgeCallsPerRun: 60,
   notify: { platform: "feishu", enabled: true },
+  repair: { enabled: true, staleMinutes: 60 },
   clock: { ...CLOCK_DEFAULTS },
 };
 
@@ -1039,6 +1041,8 @@ async function main(argv) {
     }
     return;
   }
+  const repairs = flags.has("no-repair") ? { closed: [], sessions: 0 } : repairLedger({ dir: CFG_DIR });
+  if (repairs.closed.length) process.stderr.write(`[hours] repair closed=${repairs.closed.length} ${repairs.closed.map((row) => `${row.sessionId}:${Math.round(row.durationMs / 60_000)}m`).join(",")}\n`);
   const dryRun = flags.has("dry-run");
   const dryRunClock = flags.has("dry-run-clock");
   const notify = !flags.has("no-notify");
