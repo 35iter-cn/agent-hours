@@ -30,6 +30,16 @@ git clone https://github.com/35iter-cn/agent-hours ~/code/agent-hours
 | `systemd/` | hourly timer |
 | `examples/` | configuration examples, no real values |
 
+## Judging
+
+A unit is judged from three blocks: what the user asked, an excerpt of what the
+agent produced, and a session context block — the session name the agent picked
+plus the repositories and paths that turn touched. The context says where the
+work landed, which the request and the output often leave out. Old rows are
+backfilled from their session file on first judgment. The context feeds the
+request only: it is not part of the cache key, so judged units are never
+re-judged because of it.
+
 Nothing identifying lives in this repo: credentials come from an env file or the
 environment (`envFile`, `env:NAME`), and the judging prompt is a user file.
 
