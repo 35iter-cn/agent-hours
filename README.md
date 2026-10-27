@@ -41,3 +41,16 @@ bun src/hours.mjs --dry-run --dry-run-clock # one round, no notices, no Clock wr
 
 `--dry-run` prints the report instead of sending it; `--dry-run-clock` skips Clock
 writes. `decisions.json` in the config dir caches verdicts per unit hash.
+
+### Integration
+
+`test/integration.hours.test.mjs` runs the whole chain against the real judge and
+the real clock API: it writes a ledger fixture into a temp config dir, runs one
+round, asserts the created clock period and removes it again. It is skipped
+unless asked:
+
+```bash
+AGENT_HOURS_E2E=1 bun test test/integration.hours.test.mjs
+```
+
+Cleanup runs in `finally`, so a failed assertion still removes the test periods.
