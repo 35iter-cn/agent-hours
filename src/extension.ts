@@ -12,6 +12,8 @@ export default function (pi: ExtensionAPI) {
       const record = tracker.drain({
         sessionId: ctx.sessionManager.getSessionId(),
         sessionFile: ctx.sessionManager.getSessionFile(),
+        cwd: ctx.sessionManager.getCwd(),
+        sessionName: ctx.sessionManager.getSessionName(),
         aborted,
       });
       const lastBeatAt = heartbeat?.lastBeatAt() ?? null;
@@ -27,6 +29,15 @@ export default function (pi: ExtensionAPI) {
   pi.on("input", (event) => {
     try {
       tracker.begin(event.text);
+    } catch {
+      return;
+    }
+  });
+
+  pi.on("tool_call", (event) => {
+    try {
+      const input = event.input as unknown as { path?: unknown };
+      if (typeof input?.path === "string") tracker.notePath(input.path);
     } catch {
       return;
     }
