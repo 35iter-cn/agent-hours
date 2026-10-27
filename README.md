@@ -31,3 +31,13 @@ git clone https://github.com/35iter-cn/agent-hours ~/code/agent-hours
 
 Nothing identifying lives in this repo: credentials come from an env file or the
 environment (`envFile`, `env:NAME`), and the judging prompt is a user file.
+
+## Verify
+
+```bash
+bun test                                   # 117 cases
+bun src/hours.mjs --dry-run --dry-run-clock # one round, no notices, no Clock writes
+```
+
+`--dry-run` prints the report instead of sending it; `--dry-run-clock` skips Clock
+writes. `decisions.json` in the config dir caches verdicts per unit hash.
