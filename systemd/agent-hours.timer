@@ -1,0 +1,10 @@
+[Unit]
+Description=schedule the agent-hours sync every hour
+
+[Timer]
+OnCalendar=*-*-* *:00:00
+Persistent=true
+AccuracySec=1min
+
+[Install]
+WantedBy=timers.target
