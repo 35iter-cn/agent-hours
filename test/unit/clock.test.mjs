@@ -11,7 +11,9 @@ import {
   oversizeDays,
   countedSegments,
   planReconcile,
+  decayFill,
   stitchRuns,
+  stitchRunsDecay,
   subtractCoverage,
   pruneMissing,
   pruneSynced,
@@ -456,4 +458,51 @@ test("TC-C19 segments owned by other units occupy their interval instead of bein
   assert.deepEqual(plan.patch.map((item) => item.id), ["own"]);
   assert.equal(plan.patch[0].start, now - 3 * HOUR + 25 * MIN);
   assert.deepEqual(plan.remove, []);
+});
+
+test("TC-C20 decayFill is linear between the full and the zero boundary", () => {
+  const decay = { fullMinutes: 2, zeroMinutes: 6 };
+  assert.equal(decayFill(0, decay), 0);
+  assert.equal(decayFill(1 * MIN, decay), 1 * MIN);
+  assert.equal(decayFill(2 * MIN, decay), 2 * MIN);
+  assert.equal(decayFill(4 * MIN, decay), 2 * MIN);
+  assert.equal(decayFill(6 * MIN, decay), 0);
+  assert.equal(decayFill(30 * MIN, decay), 0);
+});
+
+test("TC-C21 decay keeps a gap under the full boundary and cuts a long one without shifting the start", () => {
+  const first = { start: at("2026-10-24T10:00:00Z"), end: at("2026-10-24T10:10:00Z"), unitKeys: ["u1"] };
+  const near = { start: at("2026-10-24T10:12:00Z"), end: at("2026-10-24T10:20:00Z"), unitKeys: ["u1"] };
+  const merged = stitchRunsDecay([first, near], { fullMinutes: 2, zeroMinutes: 6 });
+  assert.equal(merged.length, 1);
+  assert.equal(merged[0].start, first.start);
+  assert.equal(merged[0].end, near.end);
+
+  const far = { start: at("2026-10-24T10:30:00Z"), end: at("2026-10-24T10:40:00Z"), unitKeys: ["u1"] };
+  const split = stitchRunsDecay([first, far], { fullMinutes: 2, zeroMinutes: 6 });
+  assert.equal(split.length, 2);
+  assert.equal(split[1].start, far.start);
+  assert.equal(split[1].end, far.end);
+});
+
+test("TC-C22 decay reports the minutes it bridged and the number of bridged gaps", () => {
+  const now = at("2026-10-24T12:00:00Z");
+  const unit = {
+    key: "s1:2026-10-24T10:00:00.000Z",
+    runs: [
+      { startedAt: at("2026-10-24T10:00:00Z"), endedAt: at("2026-10-24T10:10:00Z") },
+      { startedAt: at("2026-10-24T10:14:00Z"), endedAt: at("2026-10-24T10:20:00Z") },
+    ],
+  };
+  const judged = [{ unit, result: { kind: "count" } }];
+  const plan = buildPlan({ judged, now, cfg: { ...CLOCK_DEFAULTS, tz: TZ, gapMode: "decay" }, synced: {} });
+  assert.equal(plan.targets.length, 2);
+  assert.equal(plan.minutes, 18);
+  assert.equal(plan.gapMinutes, 2);
+  assert.equal(plan.gapCount, 1);
+
+  const zero = buildPlan({ judged, now, cfg: { ...CLOCK_DEFAULTS, tz: TZ, gapMode: "decay", decayZeroMinutes: 4 }, synced: {} });
+  assert.equal(zero.targets.length, 2);
+  assert.equal(zero.gapMinutes, 0);
+  assert.equal(zero.gapCount, 0);
 });

@@ -1064,3 +1064,23 @@ test("unit state appends the session context and keeps the hashed part unchanged
   assert.equal(unitState(bare).includes("会话名"), false);
   assert.equal(unitHash(unit), unitHash(bare));
 });
+
+test("TC-D1 dry-run-clock plans the clock without notifying or writing state", async () => {
+  const { dir, now } = sandbox();
+  const judge = fakeJudge([{ choice: "count", confidence: 0.9, probabilities: { count: 0.9, skip: 0.1 }, fallback: null }]);
+  const sent = [];
+  const outcome = await run({ now, dir, judge, dryRunClock: true, notifyImpl: (text) => (sent.push(text), { ok: true }) });
+  assert.equal(sent.length, 0);
+  assert.equal(outcome.delivered, false);
+  assert.equal(existsSync(path.join(dir, "decisions.json")), false);
+  assert.equal(existsSync(path.join(dir, "digest")), false);
+  assert.match(outcome.report, /Clock 新增 1 段/);
+});
+
+test("TC-D2 the report shows the execution and gap split only when a gap was bridged", () => {
+  const now = Date.parse("2026-10-24T02:00:00.000Z");
+  const withGap = formatReport([], { tz: "Asia/Shanghai", now, clock: { minutes: 120, gapMinutes: 30, gapCount: 3, created: 1 } });
+  assert.match(withGap, /执行 1\.5 小时 · 间隙 30 分钟（3 处）/);
+  const without = formatReport([], { tz: "Asia/Shanghai", now, clock: { minutes: 120, gapMinutes: 0, gapCount: 0, created: 1 } });
+  assert.equal(without.includes("间隙"), false);
+});

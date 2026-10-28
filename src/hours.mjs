@@ -644,6 +644,13 @@ export function formatReport(fresh, { tz, now = Date.now(), clock = null, today 
     lines.push(`今日累计 ${formatDuration(after.minutes)}（${after.segments} 段）`);
     if (before) lines.push(`本轮 ${formatDelta(after.minutes - before.minutes)}`);
   }
+  if (clock && clock.gapMinutes > 0) {
+    const scoped = after && typeof clock.gapTodayMinutes === "number";
+    const gap = scoped ? clock.gapTodayMinutes : clock.gapMinutes;
+    const total = scoped ? clock.todayMinutes : clock.minutes;
+    const count = scoped ? clock.gapTodayCount : clock.gapCount;
+    lines.push(`${scoped ? "" : "48h "}执行 ${formatDuration(Math.max(0, (total ?? 0) - gap))} · 间隙 ${formatDuration(gap)}（${count} 处）`);
+  }
   if (fresh.length) {
     lines.push(`新增 ${fresh.length} 单元 · 计入 ${counts.count ?? 0} · 不计 ${counts.skip ?? 0}${counts.review ? ` · 待确认 ${counts.review}` : ""}${splitCount ? ` · 拆分 ${splitCount}` : ""}`);
   } else {
@@ -778,6 +785,7 @@ export async function run({
   const engine = judge ?? (await loadJudge(cfg.judge));
   const send = notifyImpl ?? defaultReporter(cfg);
   const canSend = Boolean(notifyImpl) || (cfg.reporter?.enabled === true && (cfg.reporter?.type ?? "none") !== "none");
+  const readOnly = dryRun || dryRunClock;
 
   const windowStart = now - LEDGER_WINDOW_MS;
   const rows = readRecords(join(dir, "ledger"), { now });
@@ -822,7 +830,7 @@ export async function run({
     if (changed) {
       cache.units[unit.key] = { hash, result, notifiedSig: previousSig, judgedAt: new Date(now).toISOString(), ...(override ? { override } : {}) };
     }
-    if (!dryRun && changed) {
+    if (!readOnly && changed) {
       const event = {
         event: "unit",
         key: unit.key,
@@ -865,7 +873,7 @@ export async function run({
   const report = formatReport(fresh, { tz: cfg.tz, now, clock: clockSummary, today: clockOutcome && clockOutcome.todayAfter ? { before: clockOutcome.todayBefore, after: clockOutcome.todayAfter } : null });
   const worthNotifying = clockSummary ? clockChanged : fresh.length > 0;
   let delivered = false;
-  if (!dryRun) {
+  if (!readOnly) {
     writeDecisions(decisionsFile, pruneDecisions(cache, { now }));
     if (report && notify && cfg.notify?.enabled !== false && canSend && worthNotifying) {
       const sent = await send(report);
@@ -956,7 +964,7 @@ export async function syncClock({
     }
     for (const segment of plan.create) log(`[clock] plan ${iso(segment.start)} → ${iso(segment.end)} (${minute(segment)}min)`);
     return {
-      summary: { targets: plan.targets.length, minutes: plan.minutes, create: plan.create.length, patch: plan.patch.length, remove: plan.remove.length, created: plan.create.length, patched: plan.patch.length, deleted: plan.remove.length, blocked: plan.blocked, dropped: plan.dropped },
+      summary: { targets: plan.targets.length, minutes: plan.minutes, gapMinutes: plan.gapMinutes ?? 0, gapCount: plan.gapCount ?? 0, todayMinutes: plan.todayMinutes ?? 0, gapTodayMinutes: plan.gapTodayMinutes ?? 0, gapTodayCount: plan.gapTodayCount ?? 0, create: plan.create.length, patch: plan.patch.length, remove: plan.remove.length, created: plan.create.length, patched: plan.patch.length, deleted: plan.remove.length, blocked: plan.blocked, dropped: plan.dropped },
       line: `计划 ${plan.targets.length} 段 / ${formatDuration(plan.minutes)}（新建 ${plan.create.length}、改 ${plan.patch.length}、删 ${plan.remove.length}）`,
     };
   }
@@ -994,6 +1002,11 @@ export async function syncClock({
   const summary = {
     targets: plan.targets.length,
     minutes: plan.minutes,
+    gapMinutes: plan.gapMinutes ?? 0,
+    gapCount: plan.gapCount ?? 0,
+    todayMinutes: plan.todayMinutes ?? 0,
+    gapTodayMinutes: plan.gapTodayMinutes ?? 0,
+    gapTodayCount: plan.gapTodayCount ?? 0,
     covered: plan.covered.length,
     coveredMinutes: plan.coveredMinutes,
     create: plan.create.length,
@@ -1167,8 +1180,8 @@ async function main(argv) {
   }
   const dryRun = flags.has("dry-run");
   const dryRunClock = flags.has("dry-run-clock");
-  const repairs = flags.has("no-repair") || dryRun ? { closed: [], sessions: 0 } : repairLedger({ dir: CFG_DIR });
-  if (dryRun) process.stderr.write("[hours] repair skipped by dry-run\n");
+  const repairs = flags.has("no-repair") || dryRun || dryRunClock ? { closed: [], sessions: 0 } : repairLedger({ dir: CFG_DIR });
+  if (dryRun || dryRunClock) process.stderr.write("[hours] repair skipped by dry-run\n");
   if (repairs.closed.length) process.stderr.write(`[hours] repair closed=${repairs.closed.length} ${repairs.closed.map((row) => `${row.sessionId}:${Math.round(row.durationMs / 60_000)}m`).join(",")}\n`);
   const notify = !flags.has("no-notify");
   const release = acquireLock(join(CFG_DIR, ".lock"));
@@ -1178,7 +1191,7 @@ async function main(argv) {
   }
   try {
     const outcome = await run({ dryRun, notify, logDir: LOG_DIR, dryRunClock });
-    if (dryRun) process.stdout.write(`${outcome.report || "(no new units)"}\n`);
+    if (dryRun || dryRunClock) process.stdout.write(`${outcome.report || "(no new units)"}\n`);
     process.stderr.write(`[hours] units=${outcome.units} fresh=${outcome.fresh.length} notified=${outcome.delivered}\n`);
   } finally {
     release();
