@@ -12,6 +12,8 @@ export const CLOCK_DEFAULTS = {
   mergeGapMinutes: 2,
   gapCapMinutes: 5,
   gapMode: "stitch",
+  decayFullMinutes: 2,
+  decayZeroMinutes: 6,
   backfillHours: 48,
   maxWritesPerRun: 120,
   syncedTtlDays: 7,
@@ -93,7 +95,38 @@ export function stitchRuns(runs, capMs) {
   return out;
 }
 
-export function countedSegments(judged, { gapMs, capMs = null }) {
+export function decayFill(gapMs, { fullMinutes, zeroMinutes }) {
+  if (!(gapMs > 0)) return 0;
+  const gap = gapMs / MINUTE_MS;
+  const full = Math.max(0, fullMinutes);
+  const zero = Math.max(full + 1, zeroMinutes);
+  if (gap <= full) return gapMs;
+  if (gap >= zero) return 0;
+  return (gapMs * (zero - gap)) / (zero - full);
+}
+
+export function stitchRunsDecay(runs, decay) {
+  const out = [];
+  for (const run of runs) {
+    const last = out[out.length - 1];
+    if (!last) {
+      out.push({ start: run.start, end: run.end, origin: run.origin, unitKeys: [...(run.unitKeys ?? [])] });
+      continue;
+    }
+    const gap = run.start - last.end;
+    const start = gap <= 0 ? last.end : run.start - decayFill(gap, decay);
+    if (run.origin && run.origin !== last.origin) last.origin = "mixed";
+    last.unitKeys = [...new Set([...(last.unitKeys ?? []), ...(run.unitKeys ?? [])])];
+    if (start <= last.end) {
+      last.end = Math.max(last.end, run.end);
+      continue;
+    }
+    out.push({ start, end: run.end, origin: run.origin, unitKeys: [...(run.unitKeys ?? [])] });
+  }
+  return out;
+}
+
+export function countedSegments(judged, { gapMs, capMs = null, decay = null }) {
   const out = [];
   for (const entry of judged) {
     if (entry.result.kind !== "count") continue;
@@ -103,7 +136,7 @@ export function countedSegments(judged, { gapMs, capMs = null }) {
       .filter(({ run, verdict }) => run.endedAt > run.startedAt && (!entry.result.split || verdict?.kind === "count"))
       .map(({ run }) => ({ start: run.startedAt, end: run.endedAt, origin, unitKeys: [entry.unit.key] }))
       .sort((a, b) => a.start - b.start);
-    out.push(...(capMs === null ? mergeSegments(runs, gapMs) : stitchRuns(runs, capMs)));
+    out.push(...(decay ? stitchRunsDecay(runs, decay) : capMs === null ? mergeSegments(runs, gapMs) : stitchRuns(runs, capMs)));
   }
   return out;
 }
@@ -178,16 +211,56 @@ export function subtractCoverage(segments, coverage) {
   return { segments: rest, covered };
 }
 
+export function countBridgedGaps(judged, cfg, { tz = cfg.tz, day = null } = {}) {
+  const decay = cfg.gapMode === "decay"
+    ? { fullMinutes: cfg.decayFullMinutes, zeroMinutes: cfg.decayZeroMinutes }
+    : null;
+  let count = 0;
+  for (const entry of judged) {
+    if (entry.result?.kind !== "count") continue;
+    const runs = entry.unit.runs
+      .map((run, index) => ({ run, verdict: entry.result.runs?.[index] }))
+      .filter(({ run, verdict }) => run.endedAt > run.startedAt && (!entry.result.split || verdict?.kind === "count"))
+      .map(({ run }) => run)
+      .sort((a, b) => a.startedAt - b.startedAt);
+    for (let index = 1; index < runs.length; index += 1) {
+      if (day && dayKey(runs[index - 1].endedAt, tz) !== day) continue;
+      const gap = runs[index].startedAt - runs[index - 1].endedAt;
+      if (!(gap > 0)) continue;
+      const filled = decay
+        ? decayFill(gap, decay)
+        : cfg.gapMode === "merge"
+          ? (gap <= cfg.mergeGapMinutes * MINUTE_MS ? gap : 0)
+          : Math.min(gap, cfg.gapCapMinutes * MINUTE_MS);
+      if (filled > 0) count += 1;
+    }
+  }
+  return count;
+}
+
 export function buildPlan({ judged, now, cfg, synced, coverage = [] }) {
   const segments = cfg.gapMode === "merge"
     ? countedSegments(judged, { gapMs: cfg.mergeGapMinutes * MINUTE_MS })
-    : countedSegments(judged, { capMs: cfg.gapCapMinutes * MINUTE_MS });
+    : cfg.gapMode === "decay"
+      ? countedSegments(judged, { decay: { fullMinutes: cfg.decayFullMinutes, zeroMinutes: cfg.decayZeroMinutes } })
+      : countedSegments(judged, { capMs: cfg.gapCapMinutes * MINUTE_MS });
   const clipped = clipToWindow(segments, { now, hours: cfg.backfillHours });
   const aligned = mergeSegments(clipped.map(alignSegment), 0);
   const targets = filterShort(aligned, cfg.minSegmentMinutes * MINUTE_MS);
   const oversize = oversizeDays(targets, { tz: cfg.tz, warnHours: cfg.warnDailyHours });
   const blocked = new Set(oversize.map((item) => item.day));
   const usable = targets.filter((segment) => !blocked.has(dayKey(segment.start, cfg.tz)));
+  const pure = filterShort(
+    mergeSegments(clipToWindow(countedSegments(judged, { gapMs: 0 }), { now, hours: cfg.backfillHours }).map(alignSegment), 0),
+    cfg.minSegmentMinutes * MINUTE_MS,
+  ).filter((segment) => !blocked.has(dayKey(segment.start, cfg.tz)));
+  const todayKey = dayKey(now, cfg.tz);
+  const onDay = (segment) => dayKey(segment.start, cfg.tz) === todayKey;
+  const sumMinutes = (segments) => Math.round(segments.reduce((sum, segment) => sum + (segment.end - segment.start), 0) / MINUTE_MS);
+  const minutes = sumMinutes(usable);
+  const pureMinutes = sumMinutes(pure);
+  const todayMinutes = sumMinutes(usable.filter(onDay));
+  const pureTodayMinutes = sumMinutes(pure.filter(onDay));
   const from = now - cfg.backfillHours * HOUR_MS;
   const judgedKeys = new Set(judged.map((entry) => entry.unit.key));
   const owned = (item) => (item.unitKeys ?? []).some((key) => judgedKeys.has(key));
@@ -198,7 +271,12 @@ export function buildPlan({ judged, now, cfg, synced, coverage = [] }) {
   const current = live.filter(owned).map((item) => ({ id: item.id, start: item.start, end: item.end }));
   return {
     targets: open,
-    minutes: Math.round(usable.reduce((sum, segment) => sum + (segment.end - segment.start), 0) / MINUTE_MS),
+    minutes,
+    gapMinutes: Math.max(0, minutes - pureMinutes),
+    gapCount: countBridgedGaps(judged, cfg),
+    todayMinutes,
+    gapTodayMinutes: Math.max(0, todayMinutes - pureTodayMinutes),
+    gapTodayCount: countBridgedGaps(judged, cfg, { tz: cfg.tz, day: todayKey }),
     covered,
     coveredMinutes: Math.round(covered.reduce((sum, segment) => sum + (segment.end - segment.start), 0) / MINUTE_MS),
     blocked: oversize,

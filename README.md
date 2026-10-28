@@ -56,3 +56,30 @@ real clock write → reporter stub — then asserts the created period and delet
 it; cleanup also runs in `finally`, so a failing assertion still leaves no trace
 in the timesheet. It is skipped unless `AGENT_HOURS_E2E=1`, which is why the
 default `bun run test` never touches the network.
+
+## Clock segments
+
+A `count` unit contributes the time its runs actually occupy, plus a bounded
+share of the gap between consecutive runs of the same unit — that gap is the
+human reading the reply and thinking before the next turn.
+
+`clock.gapMode` picks how that share is computed:
+
+| mode | gap handling |
+| --- | --- |
+| `stitch` (default) | a gap under `gapCapMinutes` (5) is added whole; a longer gap still shifts the next segment back by `gapCapMinutes` |
+| `decay` | `gap <= decayFullMinutes` (2) counts whole, the span up to `decayZeroMinutes` (6) decays linearly to zero, and a longer gap is not bridged at all |
+| `merge` | binary switch on `mergeGapMinutes` (2); the pre-stitch behaviour |
+
+`decay` produces more, shorter segments than `stitch` on the same ledger; that is
+expected, because an unbridged gap becomes a real hole in the timesheet.
+
+The same plan drives the notify line: `执行 X · 间隙 Y（N 处）` reports how much of
+the total came from bridged gaps, so a total can be read without opening Clock.
+
+## Dry runs
+
+`--dry-run` writes nothing at all: no Clock call, no notice, no `decisions.json`
+update, no digest line. `--dry-run-clock` means the same thing for the whole
+round — it only prints the plan — and is the intended way to compare two
+timekeeping settings before switching.
