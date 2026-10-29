@@ -4,5 +4,4 @@ Description=agent-hours — judge ledger units and report
 [Service]
 Type=oneshot
 WorkingDirectory=%h/code/agent-hours
-Environment=PATH=%h/.local/bin:%h/.bun/bin:%h/.volta/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 ExecStart=%h/.bun/bin/bun %h/code/agent-hours/src/hours.mjs

@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createReporter, expandCommand, expandEnvRefs } from "../../src/reporter.mjs";
+import { defaultReporter } from "../../src/hours.mjs";
 
 test("none and disabled reporters send nothing", async () => {
   const calls = [];
@@ -54,4 +55,31 @@ test("http reporter resolves env: headers and reports non-2xx", async () => {
   const result = await failing(["body"]);
   assert.equal(result.ok, false);
   assert.equal(result.output, "503");
+});
+
+test("TC-R1 a notify platform without a reporter falls back to the agent-relay CLI by name", async () => {
+  const seen = [];
+  const send = defaultReporter({ notify: { platform: "feishu" } }, {
+    run: (bin, args) => {
+      seen.push([bin, ...args]);
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  await send("hello");
+  assert.deepEqual(seen, [["agent-relay", "notice", "emit", "--platform", "feishu", "--text", "hello"]]);
+});
+
+test("TC-R2 an explicit reporter command wins over the built-in default", async () => {
+  const seen = [];
+  const send = defaultReporter({
+    notify: { platform: "feishu" },
+    reporter: { type: "command", command: ["/bin/echo", "{text}"] },
+  }, {
+    run: (bin, args) => {
+      seen.push([bin, ...args]);
+      return { status: 0, stdout: "", stderr: "" };
+    },
+  });
+  await send("hi");
+  assert.deepEqual(seen, [["/bin/echo", "hi"]]);
 });

@@ -14,7 +14,6 @@ import { createClockClient, pickActivity } from "./clock-client.mjs";
 
 const HOME = process.env.HOME ?? homedir();
 const ROOT = dirname(fileURLToPath(import.meta.url));
-const BUN_BIN = process.env.AGENT_HOURS_BUN ?? (typeof Bun !== "undefined" ? process.execPath : "bun");
 const NOTIFY_CHUNK_CHARS = 2400;
 const CFG_DIR = join(HOME, ".config/agent-hours");
 const LEDGER_DIR = join(CFG_DIR, "ledger");
@@ -670,9 +669,16 @@ export function formatReport(fresh, { tz, now = Date.now(), clock = null, today 
   return lines.join("\n");
 }
 
-function defaultReporter(cfg) {
-  const configured = cfg.reporter ?? (cfg.notify?.platform ? { type: "command", command: [] } : { type: "none" });
-  const reporter = createReporter(configured, { log: (line) => process.stderr.write(`[hours] ${line}\n`) });
+export function defaultReporter(cfg, { run } = {}) {
+  const platform = cfg.notify?.platform;
+  const configured = cfg.reporter
+    ?? (platform
+      ? { type: "command", command: ["agent-relay", "notice", "emit", "--platform", platform, "--text", "{text}"] }
+      : { type: "none" });
+  const reporter = createReporter(configured, {
+    ...(run ? { run } : {}),
+    log: (line) => process.stderr.write(`[hours] ${line}\n`),
+  });
   return async (text) => reporter(chunkMessage(text));
 }
 
