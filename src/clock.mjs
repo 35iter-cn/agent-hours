@@ -244,31 +244,39 @@ export function buildPlan({ judged, now, cfg, synced, coverage = [] }) {
     : cfg.gapMode === "decay"
       ? countedSegments(judged, { decay: { fullMinutes: cfg.decayFullMinutes, zeroMinutes: cfg.decayZeroMinutes } })
       : countedSegments(judged, { capMs: cfg.gapCapMinutes * MINUTE_MS });
+  const from = now - cfg.backfillHours * HOUR_MS;
+  const minMs = cfg.minSegmentMinutes * MINUTE_MS;
   const clipped = clipToWindow(segments, { now, hours: cfg.backfillHours });
   const aligned = mergeSegments(clipped.map(alignSegment), 0);
-  const targets = filterShort(aligned, cfg.minSegmentMinutes * MINUTE_MS);
+  const targets = filterShort(aligned, minMs);
   const oversize = oversizeDays(targets, { tz: cfg.tz, warnHours: cfg.warnDailyHours });
   const blocked = new Set(oversize.map((item) => item.day));
-  const usable = targets.filter((segment) => !blocked.has(dayKey(segment.start, cfg.tz)));
+  const onBlocked = (segment) => blocked.has(dayKey(segment.start, cfg.tz));
+  const usable = targets.filter((segment) => !onBlocked(segment));
   const pure = filterShort(
     mergeSegments(clipToWindow(countedSegments(judged, { gapMs: 0 }), { now, hours: cfg.backfillHours }).map(alignSegment), 0),
-    cfg.minSegmentMinutes * MINUTE_MS,
-  ).filter((segment) => !blocked.has(dayKey(segment.start, cfg.tz)));
-  const todayKey = dayKey(now, cfg.tz);
+    minMs,
+  ).filter((segment) => !onBlocked(segment));
+  const managed = filterShort(mergeSegments(segments.map(alignSegment), 0), minMs)
+    .filter((segment) => segment.end > from && !onBlocked(segment));  const todayKey = dayKey(now, cfg.tz);
   const onDay = (segment) => dayKey(segment.start, cfg.tz) === todayKey;
   const sumMinutes = (segments) => Math.round(segments.reduce((sum, segment) => sum + (segment.end - segment.start), 0) / MINUTE_MS);
   const minutes = sumMinutes(usable);
   const pureMinutes = sumMinutes(pure);
   const todayMinutes = sumMinutes(usable.filter(onDay));
   const pureTodayMinutes = sumMinutes(pure.filter(onDay));
-  const from = now - cfg.backfillHours * HOUR_MS;
   const judgedKeys = new Set(judged.map((entry) => entry.unit.key));
   const owned = (item) => (item.unitKeys ?? []).some((key) => judgedKeys.has(key));
   const live = Object.values(synced ?? {}).flat().filter((item) => item.end > from);
   const foreign = live.filter((item) => !owned(item)).map((item) => ({ start: item.start, end: item.end }));
-  const { segments: afterForeign } = subtractCoverage(usable, foreign);
+  const { segments: afterForeign } = subtractCoverage(managed, foreign);
   const { segments: open, covered } = subtractCoverage(afterForeign, coverage);
   const current = live.filter(owned).map((item) => ({ id: item.id, start: item.start, end: item.end }));
+  const plan = planReconcile({ targets: open, current, thresholdMs: cfg.changeThresholdMs });
+  const edge = Math.floor(from / MINUTE_MS) * MINUTE_MS;
+  const create = plan.create
+    .map((segment) => ({ ...segment, start: Math.max(segment.start, edge) }))
+    .filter((segment) => segment.end - segment.start >= minMs);
   return {
     targets: open,
     minutes,
@@ -281,7 +289,9 @@ export function buildPlan({ judged, now, cfg, synced, coverage = [] }) {
     coveredMinutes: Math.round(covered.reduce((sum, segment) => sum + (segment.end - segment.start), 0) / MINUTE_MS),
     blocked: oversize,
     dropped: targets.length - usable.length,
-    ...planReconcile({ targets: open, current, thresholdMs: cfg.changeThresholdMs }),
+    create,
+    patch: plan.patch,
+    remove: plan.remove,
   };
 }
 
