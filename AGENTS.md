@@ -58,6 +58,7 @@ units, while `runHash` — used by split units — does change with the prompt.
 | `src/clock-client.mjs` | Clock HTTP calls |
 | `src/ledger.mjs`, `src/extension.ts` | ledger row format and the pi extension that writes it |
 | `src/repair.mjs`, `src/salvage.mjs` | closing rows whose process died |
+| External binaries | Called by name from `PATH` (`agent-relay`); the systemd user environment (`~/.config/environment.d/`) owns `PATH`, so neither the unit nor the sources set it |
 | `src/judge/`, `src/reporter.mjs` | verdicts and delivery |
 | `systemd/` | the hourly timer |
 
