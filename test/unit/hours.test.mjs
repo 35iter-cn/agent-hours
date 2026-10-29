@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync, existsSync, appendFileSync } from "node:fs";
 import os from "node:os";
+import { spawnSync } from "node:child_process";
 import path from "node:path";
 import {
   acquireLock,
@@ -1083,4 +1084,25 @@ test("TC-D2 the report shows the execution and gap split only when a gap was bri
   assert.match(withGap, /执行 1\.5 小时 · 间隙 30 分钟（3 处）/);
   const without = formatReport([], { tz: "Asia/Shanghai", now, clock: { minutes: 120, gapMinutes: 0, gapCount: 0, created: 1 } });
   assert.equal(without.includes("间隙"), false);
+});
+
+test("TC-D3 --dry-run-clock writes no event stream and no clock plan", async () => {
+  const { dir, now } = clockSandbox();
+  const judge = fakeJudge([{ choice: "count", confidence: 0.9, probabilities: { count: 0.9, skip: 0.1 }, fallback: null }]);
+  const { client, state } = fakeClock({ totals: TODAY_TOTAL });
+  const sent = [];
+  const outcome = await run({ now, dir, judge, clockClient: client, dryRunClock: true, notifyImpl: (text) => (sent.push(text), { ok: true }) });
+  assert.ok(outcome.report.includes("**工时**"));
+  assert.equal(existsSync(path.join(dir, "logs")), false);
+  assert.equal(state.periods.length, 0);
+  assert.equal(sent.length, 0);
+});
+
+test("TC-S3 the CLI keeps its only event stream under the agent-hours config dir", () => {
+  const home = mkdtempSync(path.join(os.tmpdir(), "agent-hours-home-"));
+  const cli = new URL("../../src/hours.mjs", import.meta.url).pathname;
+  const result = spawnSync(process.execPath, [cli, "--no-notify"], { env: { ...process.env, HOME: home }, encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(existsSync(path.join(home, ".config/agent-hours/logs")), true);
+  assert.equal(existsSync(path.join(home, ".config/taskradar")), false);
 });

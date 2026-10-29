@@ -506,3 +506,54 @@ test("TC-C22 decay reports the minutes it bridged and the number of bridged gaps
   assert.equal(zero.gapMinutes, 0);
   assert.equal(zero.gapCount, 0);
 });
+
+test("TC-C23 a record the window edge already trimmed is extended, never shortened again", () => {
+  const now = at("2026-10-29T00:00:49Z");
+  const unit = {
+    key: "s1:2026-10-26T23:45:00.000Z",
+    runs: [{ startedAt: at("2026-10-26T23:45:00Z"), endedAt: at("2026-10-27T00:07:00Z") }],
+  };
+  const judged = [{ unit, result: { kind: "count" } }];
+  const synced = {
+    "2026-10-27": [{ id: "own", start: at("2026-10-26T23:49:00Z"), end: at("2026-10-27T00:07:00Z"), unitKeys: [unit.key] }],
+  };
+  const plan = buildPlan({ judged, now, cfg: { ...CLOCK_DEFAULTS, tz: TZ }, synced });
+  assert.deepEqual(plan.create, []);
+  assert.deepEqual(plan.remove, []);
+  assert.equal(plan.patch.length, 1);
+  assert.equal(plan.patch[0].start, at("2026-10-26T23:45:00Z"));
+  assert.equal(plan.patch[0].end, at("2026-10-27T00:07:00Z"));
+  assert.ok(plan.patch[0].start <= synced["2026-10-27"][0].start);
+});
+
+test("TC-C24 a segment crossing the edge without a record is created from the edge", () => {
+  const now = at("2026-10-29T00:00:49Z");
+  const unit = {
+    key: "s1:2026-10-26T23:45:00.000Z",
+    runs: [{ startedAt: at("2026-10-26T23:45:00Z"), endedAt: at("2026-10-27T00:07:00Z") }],
+  };
+  const judged = [{ unit, result: { kind: "count" } }];
+  const plan = buildPlan({ judged, now, cfg: { ...CLOCK_DEFAULTS, tz: TZ }, synced: {} });
+  assert.equal(plan.create.length, 1);
+  assert.equal(plan.create[0].start, at("2026-10-27T00:00:00Z"));
+  assert.equal(plan.create[0].end, at("2026-10-27T00:07:00Z"));
+
+  const strict = buildPlan({ judged, now, cfg: { ...CLOCK_DEFAULTS, tz: TZ, minSegmentMinutes: 8 }, synced: {} });
+  assert.deepEqual(strict.create, []);
+});
+
+test("TC-C25 a raised minimum length does not turn a crossing record into a delete", () => {
+  const now = at("2026-10-29T00:05:00Z");
+  const unit = {
+    key: "s1:2026-10-26T23:00:00.000Z",
+    runs: [{ startedAt: at("2026-10-26T23:00:00Z"), endedAt: at("2026-10-27T00:10:00Z") }],
+  };
+  const judged = [{ unit, result: { kind: "count" } }];
+  const synced = {
+    "2026-10-27": [{ id: "own", start: at("2026-10-26T23:00:00Z"), end: at("2026-10-27T00:10:00Z"), unitKeys: [unit.key] }],
+  };
+  const plan = buildPlan({ judged, now, cfg: { ...CLOCK_DEFAULTS, tz: TZ, minSegmentMinutes: 10 }, synced });
+  assert.equal(plan.targets.length, 1);
+  assert.deepEqual(plan.remove, []);
+  assert.deepEqual(plan.patch, []);
+});
