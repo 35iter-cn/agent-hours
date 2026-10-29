@@ -21,7 +21,6 @@ const LEDGER_DIR = join(CFG_DIR, "ledger");
 const DECISIONS_FILE = join(CFG_DIR, "decisions.json");
 const REVIEW_DIR = join(CFG_DIR, "review");
 const DIGEST_DIR = join(CFG_DIR, "digest");
-const LOG_DIR = join(HOME, ".config/taskradar/logs/hours");
 const CLOCK_ENV = join(HOME, ".config/agent-hours/clock.env");
 
 export async function loadJudge(spec = {}) {
@@ -738,7 +737,7 @@ function appendDigest(line, { dir = CFG_DIR, now, tz }) {
   appendFileSync(join(digestDir, `${formatDay(now, tz)}.md`), `${line}\n`);
 }
 
-function appendEvent(record, { dir = LOG_DIR, now, tz } = {}) {
+function appendEvent(record, { dir, now, tz } = {}) {
   mkdirSync(dir, { recursive: true });
   appendFileSync(join(dir, `${formatDay(now, tz)}.jsonl`), `${JSON.stringify({ ts: new Date(now).toISOString(), ...record })}\n`);
 }
@@ -947,7 +946,7 @@ export async function syncClock({
 
   if (dryRun || planOnly) {
     const plan = buildPlan({ judged, now, cfg: clockCfg, synced: stored });
-    if (!dryRun) {
+    if (!dryRun && !planOnly) {
       appendEvent(
         {
           event: "clock_plan",
@@ -1190,7 +1189,7 @@ async function main(argv) {
     return;
   }
   try {
-    const outcome = await run({ dryRun, notify, logDir: LOG_DIR, dryRunClock });
+    const outcome = await run({ dryRun, notify, dryRunClock });
     if (dryRun || dryRunClock) process.stdout.write(`${outcome.report || "(no new units)"}\n`);
     process.stderr.write(`[hours] units=${outcome.units} fresh=${outcome.fresh.length} notified=${outcome.delivered}\n`);
   } finally {
