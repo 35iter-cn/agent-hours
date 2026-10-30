@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 import { normalizePaths } from "./ledger.mjs";
 import { repairLedger } from "./repair.mjs";
 import { createReporter } from "./reporter.mjs";
-import { buildPlan, CLOCK_DEFAULTS, dayKey, groupByDay, pruneMissing, pruneSynced } from "./clock.mjs";
+import { buildPlan, CLOCK_DEFAULTS, dayKey, groupByDay, pruneMissing, pruneSynced, splitAtMidnight, unionSegments } from "./clock.mjs";
 import { createClockClient, pickActivity } from "./clock-client.mjs";
 
 const HOME = process.env.HOME ?? homedir();
@@ -919,6 +919,29 @@ export function humanCoverage(periods, { ownIds, activityId }) {
     .filter((item) => item.activityId === activityId && !ownIds.has(item.id))
     .filter((item) => Number.isFinite(item.start) && Number.isFinite(item.end) && item.end > item.start)
     .map((item) => ({ start: item.start, end: item.end }));
+}
+
+export function landingDays({ created = [], patched = [], deleted = [], previous = new Map(), tz }) {
+  const acc = new Map();
+  const add = (segment, sign) => {
+    if (!segment) return;
+    for (const part of splitAtMidnight(segment.start, segment.end, tz)) {
+      const entry = acc.get(part.day) ?? { day: part.day, minutes: 0, spans: [] };
+      entry.minutes += sign * Math.round((part.end - part.start) / 60_000);
+      if (sign > 0) entry.spans.push({ start: part.start, end: part.end });
+      acc.set(part.day, entry);
+    }
+  };
+  for (const segment of created) add(segment, 1);
+  for (const item of patched) {
+    add(previous.get(item.id), -1);
+    add(item, 1);
+  }
+  for (const id of deleted) add(previous.get(id), -1);
+  return [...acc.values()]
+    .filter((entry) => entry.minutes !== 0)
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .map((entry) => ({ ...entry, spans: unionSegments(entry.spans, 0) }));
 }
 
 export async function readDayTotal(client, { now, tz }) {

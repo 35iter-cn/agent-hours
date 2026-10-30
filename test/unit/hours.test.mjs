@@ -13,6 +13,7 @@ import {
   formatDuration,
   formatReport,
   humanCoverage,
+  landingDays,
   listReviews,
   planOperations,
   readDecisions,
@@ -1105,4 +1106,28 @@ test("TC-S3 the CLI keeps its only event stream under the agent-hours config dir
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(path.join(home, ".config/agent-hours/logs")), true);
   assert.equal(existsSync(path.join(home, ".config/taskradar")), false);
+});
+
+test("TC-S4 landing minutes add up across the local midnight", () => {
+  const created = [{ start: Date.parse("2026-10-29T15:50:00Z"), end: Date.parse("2026-10-29T16:20:00Z") }];
+  const days = landingDays({ created, tz: "Asia/Shanghai" });
+  assert.deepEqual(days.map((entry) => entry.day), ["2026-10-29", "2026-10-30"]);
+  assert.deepEqual(days.map((entry) => entry.minutes), [10, 20]);
+  assert.equal(days.reduce((sum, entry) => sum + entry.minutes, 0), 30);
+});
+
+test("TC-S5 a shortened patch lands as a negative day", () => {
+  const previous = new Map([["p1", { start: Date.parse("2026-10-30T05:00:00Z"), end: Date.parse("2026-10-30T05:30:00Z") }]]);
+  const days = landingDays({
+    patched: [{ id: "p1", start: Date.parse("2026-10-30T05:00:00Z"), end: Date.parse("2026-10-30T05:18:00Z") }],
+    deleted: ["p2"],
+    previous: new Map([...previous, ["p2", { start: Date.parse("2026-10-30T06:00:00Z"), end: Date.parse("2026-10-30T06:10:00Z") }]]),
+    tz: "Asia/Shanghai",
+  });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].day, "2026-10-30");
+  assert.equal(days[0].minutes, -22);
+  assert.equal(days[0].spans.length, 1);
+  assert.equal(days[0].spans[0].start, Date.parse("2026-10-30T05:00:00Z"));
+  assert.equal(days[0].spans[0].end, Date.parse("2026-10-30T05:18:00Z"));
 });
