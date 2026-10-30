@@ -586,6 +586,14 @@ export function formatDay(ms, tz) {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 }
 
+function formatSpans(spans, tz) {
+  const list = Array.isArray(spans) ? spans : [];
+  if (!list.length) return "";
+  const parts = list.map((span) => `${formatClock(span.start, tz)}–${formatClock(span.end, tz)}`);
+  if (parts.length <= 3) return parts.join("、");
+  return `${parts[0]}、…、${parts.at(-1)}（等 ${parts.length} 段）`;
+}
+
 function preview(text, limit) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
@@ -618,7 +626,7 @@ export function formatEntry(unit, result, { tz }) {
   return lines.join("\n");
 }
 
-export function formatReport(fresh, { tz, now = Date.now(), clock = null, today = null } = {}) {
+export function formatReport(fresh, { tz, now = Date.now(), clock = null, today = null, landing = null } = {}) {
   if (!fresh.length && !clock) return "";
   const counts = fresh.reduce((acc, item) => {
     acc[item.result.kind] = (acc[item.result.kind] ?? 0) + 1;
@@ -636,25 +644,32 @@ export function formatReport(fresh, { tz, now = Date.now(), clock = null, today 
         return sum + runs.reduce((inner, run) => inner + run.durationMs / 60_000, 0);
       }, 0);
   const lines = [`**工时** ${formatDay(now, tz)} ${formatClock(now, tz)}`];
-  const after = today?.after ?? null;
-  const before = today?.before ?? null;
-  if (after) {
-    lines.push(`今日累计 ${formatDuration(after.minutes)}（${after.segments} 段）`);
-    if (before) lines.push(`本轮 ${formatDelta(after.minutes - before.minutes)}`);
-  }
-  if (clock && clock.gapMinutes > 0) {
-    const scoped = after && typeof clock.gapTodayMinutes === "number";
-    const gap = scoped ? clock.gapTodayMinutes : clock.gapMinutes;
-    const total = scoped ? clock.todayMinutes : clock.minutes;
-    const count = scoped ? clock.gapTodayCount : clock.gapCount;
-    lines.push(`${scoped ? "" : "48h "}执行 ${formatDuration(Math.max(0, (total ?? 0) - gap))} · 间隙 ${formatDuration(gap)}（${count} 处）`);
+  const todayKey = formatDay(now, tz);
+  const days = Array.isArray(landing) ? landing : [];
+  const only = days.length === 1 ? days[0] : null;
+  const landed = days.reduce((sum, entry) => sum + entry.minutes, 0);
+  const todayTotal = today ? `${todayKey} 累计 ${formatDuration(today.minutes)}（${today.segments} 段）` : null;
+  if (only && only.day === todayKey) {
+    if (todayTotal) lines.push(todayTotal);
+    const spans = only.spans?.length ? ` · 记在 ${formatSpans(only.spans, tz)}` : "";
+    lines.push(`本轮 ${formatDelta(only.minutes)}${spans}`);
+  } else if (days.length) {
+    if (!days.some((entry) => entry.day === todayKey) && todayTotal) lines.push(todayTotal);
+    lines.push(`本轮 ${formatDelta(landed)}${days.length > 1 ? `，记在 ${days.length} 天` : ""}`);
+    for (const entry of days) {
+      const spans = entry.spans?.length ? ` · ${formatSpans(entry.spans, tz)}` : "";
+      const total = entry.total ? ` · 累计 ${formatDuration(entry.total.minutes)}（${entry.total.segments} 段）` : "";
+      lines.push(`• ${entry.day} · ${formatDelta(entry.minutes)}${spans}${total}`);
+    }
+  } else if (todayTotal) {
+    lines.push(todayTotal);
   }
   if (fresh.length) {
     lines.push(`新增 ${fresh.length} 单元 · 计入 ${counts.count ?? 0} · 不计 ${counts.skip ?? 0}${counts.review ? ` · 待确认 ${counts.review}` : ""}${splitCount ? ` · 拆分 ${splitCount}` : ""}`);
   } else {
     lines.push("本轮无新增单元");
   }
-  if (!after && fresh.length) lines.push(`计入时长 ${formatDuration(countedMinutes)}`);
+  if (!today && fresh.length) lines.push(`计入时长 ${formatDuration(countedMinutes)}`);
   if (clock) {
     const bits = [];
     if (clock.created) bits.push(`新增 ${clock.created} 段`);
@@ -875,7 +890,7 @@ export async function run({
 
   const clockSummary = clockOutcome?.summary ?? null;
   const clockChanged = Boolean(clockSummary && (clockSummary.created ?? 0) + (clockSummary.patched ?? 0) + (clockSummary.deleted ?? 0) > 0);
-  const report = formatReport(fresh, { tz: cfg.tz, now, clock: clockSummary, today: clockOutcome && clockOutcome.todayAfter ? { before: clockOutcome.todayBefore, after: clockOutcome.todayAfter } : null });
+  const report = formatReport(fresh, { tz: cfg.tz, now, clock: clockSummary, today: clockOutcome?.todayAfter ?? null, landing: clockOutcome?.landing ?? null });
   const worthNotifying = clockSummary ? clockChanged : fresh.length > 0;
   let delivered = false;
   if (!readOnly) {
@@ -1003,8 +1018,6 @@ export async function syncClock({
   }
 
   const api = client ?? createClockClient({ baseUrl: clockCfg.baseUrl, apiKey });
-  const beforeTotals = await readDayTotals(api, { now, tz: clockCfg.tz });
-  const todayBefore = beforeTotals ? (beforeTotals.get(dayKey(now, clockCfg.tz)) ?? { minutes: 0, segments: 0 }) : null;
   let activityId = clockCfg.activityId;
   if (!activityId) {
     const listed = await api.activities();
@@ -1115,7 +1128,7 @@ export async function syncClock({
   const previous = new Map(Object.values(synced).flat().map((item) => [item.id, item]));
   const landing = landingDays({ created, patched, deleted, previous, tz: clockCfg.tz })
     .map((entry) => ({ ...entry, total: totals?.get(entry.day) ?? null }));
-  return { summary, line, todayBefore, todayAfter, landing };
+  return { summary, line, todayAfter, landing };
 }
 
 async function fetchLivePeriods(api, { from, to }) {
