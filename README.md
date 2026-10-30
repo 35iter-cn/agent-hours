@@ -74,8 +74,11 @@ human reading the reply and thinking before the next turn.
 `decay` produces more, shorter segments than `stitch` on the same ledger; that is
 expected, because an unbridged gap becomes a real hole in the timesheet.
 
-The same plan drives the notify line: `执行 X · 间隙 Y（N 处）` reports how much of
-the total came from bridged gaps, so a total can be read without opening Clock.
+The notify line follows the plan's landing dates. A round that only writes today
+collapses to `本轮 +48 分钟 · 记在 14:02–14:50`; a round that also writes an earlier
+day lists every day it touched, each with its own delta, span and running total,
+so the morning notice for a round that ran past midnight still says which day the
+minutes belong to.
 
 ## Dry runs
 
