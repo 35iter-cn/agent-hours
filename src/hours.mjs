@@ -9,7 +9,7 @@ import { dirname } from "node:path";
 import { normalizePaths } from "./ledger.mjs";
 import { repairLedger } from "./repair.mjs";
 import { createReporter } from "./reporter.mjs";
-import { buildPlan, CLOCK_DEFAULTS, dayKey, groupByDay, pruneMissing, pruneSynced } from "./clock.mjs";
+import { buildPlan, CLOCK_DEFAULTS, dayKey, groupByDay, pruneMissing, pruneSynced, splitAtMidnight, unionSegments } from "./clock.mjs";
 import { createClockClient, pickActivity } from "./clock-client.mjs";
 
 const HOME = process.env.HOME ?? homedir();
@@ -586,6 +586,14 @@ export function formatDay(ms, tz) {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 }
 
+function formatSpans(spans, tz) {
+  const list = Array.isArray(spans) ? spans : [];
+  if (!list.length) return "";
+  const parts = list.map((span) => `${formatClock(span.start, tz)}–${formatClock(span.end, tz)}`);
+  if (parts.length <= 3) return parts.join("、");
+  return `${parts[0]}、…、${parts.at(-1)}（等 ${parts.length} 段）`;
+}
+
 function preview(text, limit) {
   const flat = String(text ?? "").replace(/\s+/g, " ").trim();
   return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
@@ -618,7 +626,7 @@ export function formatEntry(unit, result, { tz }) {
   return lines.join("\n");
 }
 
-export function formatReport(fresh, { tz, now = Date.now(), clock = null, today = null } = {}) {
+export function formatReport(fresh, { tz, now = Date.now(), clock = null, today = null, landing = null } = {}) {
   if (!fresh.length && !clock) return "";
   const counts = fresh.reduce((acc, item) => {
     acc[item.result.kind] = (acc[item.result.kind] ?? 0) + 1;
@@ -636,25 +644,32 @@ export function formatReport(fresh, { tz, now = Date.now(), clock = null, today 
         return sum + runs.reduce((inner, run) => inner + run.durationMs / 60_000, 0);
       }, 0);
   const lines = [`**工时** ${formatDay(now, tz)} ${formatClock(now, tz)}`];
-  const after = today?.after ?? null;
-  const before = today?.before ?? null;
-  if (after) {
-    lines.push(`今日累计 ${formatDuration(after.minutes)}（${after.segments} 段）`);
-    if (before) lines.push(`本轮 ${formatDelta(after.minutes - before.minutes)}`);
-  }
-  if (clock && clock.gapMinutes > 0) {
-    const scoped = after && typeof clock.gapTodayMinutes === "number";
-    const gap = scoped ? clock.gapTodayMinutes : clock.gapMinutes;
-    const total = scoped ? clock.todayMinutes : clock.minutes;
-    const count = scoped ? clock.gapTodayCount : clock.gapCount;
-    lines.push(`${scoped ? "" : "48h "}执行 ${formatDuration(Math.max(0, (total ?? 0) - gap))} · 间隙 ${formatDuration(gap)}（${count} 处）`);
+  const todayKey = formatDay(now, tz);
+  const days = Array.isArray(landing) ? landing : [];
+  const only = days.length === 1 ? days[0] : null;
+  const landed = days.reduce((sum, entry) => sum + entry.minutes, 0);
+  const todayTotal = today ? `${todayKey} 累计 ${formatDuration(today.minutes)}（${today.segments} 段）` : null;
+  if (only && only.day === todayKey) {
+    if (todayTotal) lines.push(todayTotal);
+    const spans = only.spans?.length ? ` · 记在 ${formatSpans(only.spans, tz)}` : "";
+    lines.push(`本轮 ${formatDelta(only.minutes)}${spans}`);
+  } else if (days.length) {
+    if (!days.some((entry) => entry.day === todayKey) && todayTotal) lines.push(todayTotal);
+    lines.push(`本轮 ${formatDelta(landed)}${days.length > 1 ? `，记在 ${days.length} 天` : ""}`);
+    for (const entry of days) {
+      const spans = entry.spans?.length ? ` · ${formatSpans(entry.spans, tz)}` : "";
+      const total = entry.total ? ` · 累计 ${formatDuration(entry.total.minutes)}（${entry.total.segments} 段）` : "";
+      lines.push(`• ${entry.day} · ${formatDelta(entry.minutes)}${spans}${total}`);
+    }
+  } else if (todayTotal) {
+    lines.push(todayTotal);
   }
   if (fresh.length) {
     lines.push(`新增 ${fresh.length} 单元 · 计入 ${counts.count ?? 0} · 不计 ${counts.skip ?? 0}${counts.review ? ` · 待确认 ${counts.review}` : ""}${splitCount ? ` · 拆分 ${splitCount}` : ""}`);
   } else {
     lines.push("本轮无新增单元");
   }
-  if (!after && fresh.length) lines.push(`计入时长 ${formatDuration(countedMinutes)}`);
+  if (!today && fresh.length) lines.push(`计入时长 ${formatDuration(countedMinutes)}`);
   if (clock) {
     const bits = [];
     if (clock.created) bits.push(`新增 ${clock.created} 段`);
@@ -875,7 +890,7 @@ export async function run({
 
   const clockSummary = clockOutcome?.summary ?? null;
   const clockChanged = Boolean(clockSummary && (clockSummary.created ?? 0) + (clockSummary.patched ?? 0) + (clockSummary.deleted ?? 0) > 0);
-  const report = formatReport(fresh, { tz: cfg.tz, now, clock: clockSummary, today: clockOutcome && clockOutcome.todayAfter ? { before: clockOutcome.todayBefore, after: clockOutcome.todayAfter } : null });
+  const report = formatReport(fresh, { tz: cfg.tz, now, clock: clockSummary, today: clockOutcome?.todayAfter ?? null, landing: clockOutcome?.landing ?? null });
   const worthNotifying = clockSummary ? clockChanged : fresh.length > 0;
   let delivered = false;
   if (!readOnly) {
@@ -921,14 +936,35 @@ export function humanCoverage(periods, { ownIds, activityId }) {
     .map((item) => ({ start: item.start, end: item.end }));
 }
 
-export async function readDayTotal(client, { now, tz }) {
+export function landingDays({ created = [], patched = [], deleted = [], previous = new Map(), tz }) {
+  const acc = new Map();
+  const add = (segment, sign) => {
+    if (!segment) return;
+    for (const part of splitAtMidnight(segment.start, segment.end, tz)) {
+      const entry = acc.get(part.day) ?? { day: part.day, minutes: 0, spans: [] };
+      entry.minutes += sign * Math.round((part.end - part.start) / 60_000);
+      if (sign > 0) entry.spans.push({ start: part.start, end: part.end });
+      acc.set(part.day, entry);
+    }
+  };
+  for (const segment of created) add(segment, 1);
+  for (const item of patched) {
+    add(previous.get(item.id), -1);
+    add(item, 1);
+  }
+  for (const id of deleted) add(previous.get(id), -1);
+  return [...acc.values()]
+    .filter((entry) => entry.minutes !== 0)
+    .sort((a, b) => a.day.localeCompare(b.day))
+    .map((entry) => ({ ...entry, spans: unionSegments(entry.spans, 0) }));
+}
+
+export async function readDayTotals(client, { now, tz }) {
   if (!client) return null;
-  const res = await client.daily({ start: now - 36 * 3_600_000, end: now + 3_600_000, tz });
+  const res = await client.daily({ start: now - 50 * 3_600_000, end: now + 3_600_000, tz });
   if (!res?.ok) return null;
   const rows = Array.isArray(res.data) ? res.data : (res.data?.days ?? []);
-  const today = rows.find((row) => row.date === dayKey(now, tz));
-  if (!today) return { minutes: 0, segments: 0 };
-  return { minutes: Math.round((today.totalDuration ?? 0) / 60_000), segments: today.periodCount ?? 0 };
+  return new Map(rows.map((row) => [row.date, { minutes: Math.round((row.totalDuration ?? 0) / 60_000), segments: row.periodCount ?? 0 }]));
 }
 
 export async function syncClock({
@@ -982,7 +1018,6 @@ export async function syncClock({
   }
 
   const api = client ?? createClockClient({ baseUrl: clockCfg.baseUrl, apiKey });
-  const todayBefore = await readDayTotal(api, { now, tz: clockCfg.tz });
   let activityId = clockCfg.activityId;
   if (!activityId) {
     const listed = await api.activities();
@@ -1088,8 +1123,12 @@ export async function syncClock({
 
   appendEvent({ event: "clock_round", ...summary, created: created.length, patched: patched.length, deleted: deleted.length }, { dir: logDir, now, tz: cfg.tz });
   const line = `写 ${created.length + patched.length} 段 / 删 ${deleted.length}${plan.covered.length ? ` / 人工已记 ${plan.covered.length} 段（${formatDuration(plan.coveredMinutes)}）` : ""} / 冲突 ${summary.conflict}${summary.conflictMinutes ? `（${formatDuration(summary.conflictMinutes)}）` : ""}${summary.blocked.length ? ` / 超限跳过 ${summary.blocked.map((item) => item.day).join(",")}` : ""}`;
-  const todayAfter = await readDayTotal(api, { now, tz: clockCfg.tz });
-  return { summary, line, todayBefore, todayAfter };
+  const totals = await readDayTotals(api, { now, tz: clockCfg.tz });
+  const todayAfter = totals ? (totals.get(dayKey(now, clockCfg.tz)) ?? { minutes: 0, segments: 0 }) : null;
+  const previous = new Map(Object.values(synced).flat().map((item) => [item.id, item]));
+  const landing = landingDays({ created, patched, deleted, previous, tz: clockCfg.tz })
+    .map((entry) => ({ ...entry, total: totals?.get(entry.day) ?? null }));
+  return { summary, line, todayAfter, landing };
 }
 
 async function fetchLivePeriods(api, { from, to }) {

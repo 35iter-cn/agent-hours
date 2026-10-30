@@ -13,6 +13,7 @@ import {
   formatDuration,
   formatReport,
   humanCoverage,
+  landingDays,
   listReviews,
   planOperations,
   readDecisions,
@@ -20,12 +21,13 @@ import {
   readOpenRuns,
   readRecords,
   dedupeRuns,
-  readDayTotal,
+  readDayTotals,
   formatDelta,
   run,
   runHash,
   runState,
   setOverride,
+  syncClock,
   unitHash,
   unitState,
   hydrateContext,
@@ -913,7 +915,7 @@ test("one unit is judged exactly once across the open to closed transition", asy
   assert.deepEqual(Object.values(after.units).map((entry) => entry.hash), Object.values(before.units).map((entry) => entry.hash));
 });
 
-test("readDayTotal reads today's total from the daily endpoint", async () => {
+test("readDayTotals maps every day in the window", async () => {
   const now = Date.parse("2026-10-24T05:00:00.000Z");
   const calls = [];
   const client = {
@@ -922,51 +924,73 @@ test("readDayTotal reads today's total from the daily endpoint", async () => {
       return { ok: true, data: [{ date: "2026-10-24", totalDuration: 158 * MINUTE, periodCount: 8 }] };
     },
   };
-  const total = await readDayTotal(client, { now, tz: "Asia/Shanghai" });
-  assert.deepEqual(total, { minutes: 158, segments: 8 });
+  const totals = await readDayTotals(client, { now, tz: "Asia/Shanghai" });
+  assert.deepEqual(totals.get("2026-10-24"), { minutes: 158, segments: 8 });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].tz, "Asia/Shanghai");
 
-  const empty = { async daily() { return { ok: true, data: [{ date: "2026-10-23", totalDuration: 10 * MINUTE, periodCount: 1 }] }; } };
-  assert.deepEqual(await readDayTotal(empty, { now, tz: "Asia/Shanghai" }), { minutes: 0, segments: 0 });
-
   const broken = { async daily() { return { ok: false, code: "server" }; } };
-  assert.equal(await readDayTotal(broken, { now, tz: "Asia/Shanghai" }), null);
+  assert.equal(await readDayTotals(broken, { now, tz: "Asia/Shanghai" }), null);
 });
 
-test("the report leads with today's total and this round's delta", () => {
-  const now = Date.parse("2026-10-24T05:00:00.000Z");
-  const fresh = [{ unit: buildUnits([rec("2026-10-24T01:00:00.000Z", 5)])[0], result: { kind: "count" } }];
-  const report = formatReport(fresh, {
+test("TC-S7 a single landing day on today collapses to one line", () => {
+  const now = Date.parse("2026-10-30T06:00:00Z");
+  const report = formatReport([], {
     tz: "Asia/Shanghai",
     now,
-    clock: { minutes: 158, created: 2, patched: 5, deleted: 0 },
-    today: { before: { minutes: 122, segments: 6 }, after: { minutes: 158, segments: 8 } },
+    clock: { created: 1, patched: 0, deleted: 0 },
+    today: { minutes: 192, segments: 7 },
+    landing: [{ day: "2026-10-30", minutes: 48, spans: [{ start: Date.parse("2026-10-30T06:02:00Z"), end: Date.parse("2026-10-30T06:50:00Z") }], total: { minutes: 192, segments: 7 } }],
   });
-  assert.match(report, /今日累计 2\.6 小时（8 段）/);
-  assert.match(report, /本轮 \+36 分钟/);
-  assert.doesNotMatch(report, /计入时长/);
-
-  const dropped = formatReport(fresh, {
-    tz: "Asia/Shanghai",
-    now,
-    clock: { minutes: 158, created: 0, patched: 1, deleted: 0 },
-    today: { before: { minutes: 158, segments: 8 }, after: { minutes: 146, segments: 7 } },
-  });
-  assert.match(dropped, /本轮 −12 分钟/);
-
-  const flat = formatReport(fresh, {
-    tz: "Asia/Shanghai",
-    now,
-    clock: { minutes: 158, created: 0, patched: 0, deleted: 0 },
-    today: { before: { minutes: 158, segments: 8 }, after: { minutes: 158, segments: 8 } },
-  });
-  assert.match(flat, /本轮 ±0 分钟/);
-
-  const noClock = formatReport(fresh, { tz: "Asia/Shanghai", now });
-  assert.doesNotMatch(noClock, /今日累计/);
-  assert.match(noClock, /计入时长/);
+  assert.match(report, /10-30 累计 3\.2 小时（7 段）/);
+  assert.match(report, /本轮 \+48 分钟 · 记在 14:02–14:50/);
+  assert.equal(report.includes("• "), false);
   assert.equal(formatDelta(-12), "−12 分钟");
+});
+
+test("TC-S8 two landing days list each day once", () => {
+  const now = Date.parse("2026-10-29T16:31:00Z");
+  const report = formatReport([], {
+    tz: "Asia/Shanghai",
+    now,
+    clock: { created: 4, patched: 0, deleted: 0 },
+    today: { minutes: 20, segments: 1 },
+    landing: [
+      { day: "2026-10-29", minutes: 35, spans: [{ start: Date.parse("2026-10-29T14:24:00Z"), end: Date.parse("2026-10-29T15:00:00Z") }], total: { minutes: 528, segments: 34 } },
+      { day: "2026-10-30", minutes: 20, spans: [{ start: Date.parse("2026-10-29T16:10:00Z"), end: Date.parse("2026-10-29T16:30:00Z") }], total: { minutes: 20, segments: 1 } },
+    ],
+  });
+  assert.match(report, /本轮 \+55 分钟，记在 2 天/);
+  assert.match(report, /• 2026-10-29 · \+35 分钟 · 22:24–23:00 · 累计 8\.8 小时（34 段）/);
+  assert.match(report, /• 2026-10-30 · \+20 分钟 · 00:10–00:30 · 累计 20 分钟（1 段）/);
+  assert.equal(report.includes("2026-10-30 累计"), false);
+});
+
+test("TC-S9 a day without a total drops the running total", () => {
+  const now = Date.parse("2026-10-29T23:31:00Z");
+  const base = {
+    tz: "Asia/Shanghai",
+    now,
+    clock: { created: 2, patched: 0, deleted: 0 },
+    today: { minutes: 0, segments: 0 },
+  };
+  const spans = [{ start: Date.parse("2026-10-29T14:24:00Z"), end: Date.parse("2026-10-29T15:00:00Z") }];
+  const withTotal = formatReport([], { ...base, landing: [{ day: "2026-10-29", minutes: 35, spans, total: { minutes: 528, segments: 34 } }] });
+  assert.match(withTotal, /10-30 累计 0 分钟（0 段）/);
+  assert.match(withTotal, /本轮 \+35 分钟/);
+  assert.match(withTotal, /• 2026-10-29 · \+35 分钟 · 22:24–23:00 · 累计 8\.8 小时（34 段）/);
+
+  const without = formatReport([], { ...base, landing: [{ day: "2026-10-29", minutes: 35, spans, total: null }] });
+  assert.doesNotMatch(without, /• 2026-10-29[^\n]*累计/);
+
+  const removed = formatReport([], {
+    ...base,
+    now: Date.parse("2026-10-30T06:00:00Z"),
+    today: { minutes: 100, segments: 3 },
+    landing: [{ day: "2026-10-30", minutes: -12, spans: [] }],
+  });
+  assert.doesNotMatch(removed, /记在/);
+  assert.match(removed, /本轮 −12 分钟/);
 });
 
 test("TC-S1 a salvaged record wins once the real closing record arrives", () => {
@@ -1078,12 +1102,17 @@ test("TC-D1 dry-run-clock plans the clock without notifying or writing state", a
   assert.match(outcome.report, /Clock 新增 1 段/);
 });
 
-test("TC-D2 the report shows the execution and gap split only when a gap was bridged", () => {
+test("TC-D2 the report no longer splits execution and gaps", () => {
   const now = Date.parse("2026-10-24T02:00:00.000Z");
-  const withGap = formatReport([], { tz: "Asia/Shanghai", now, clock: { minutes: 120, gapMinutes: 30, gapCount: 3, created: 1 } });
-  assert.match(withGap, /执行 1\.5 小时 · 间隙 30 分钟（3 处）/);
-  const without = formatReport([], { tz: "Asia/Shanghai", now, clock: { minutes: 120, gapMinutes: 0, gapCount: 0, created: 1 } });
-  assert.equal(without.includes("间隙"), false);
+  const report = formatReport([], {
+    tz: "Asia/Shanghai",
+    now,
+    clock: { minutes: 120, gapMinutes: 30, gapCount: 3, created: 1 },
+    today: { minutes: 120, segments: 2 },
+    landing: [{ day: "2026-10-24", minutes: 30, spans: [{ start: Date.parse("2026-10-24T01:30:00Z"), end: Date.parse("2026-10-24T02:00:00Z") }], total: { minutes: 120, segments: 2 } }],
+  });
+  assert.equal(report.includes("间隙"), false);
+  assert.match(report, /本轮 \+30 分钟 · 记在 09:30–10:00/);
 });
 
 test("TC-D3 --dry-run-clock writes no event stream and no clock plan", async () => {
@@ -1105,4 +1134,57 @@ test("TC-S3 the CLI keeps its only event stream under the agent-hours config dir
   assert.equal(result.status, 0, result.stderr);
   assert.equal(existsSync(path.join(home, ".config/agent-hours/logs")), true);
   assert.equal(existsSync(path.join(home, ".config/taskradar")), false);
+});
+
+test("TC-S4 landing minutes add up across the local midnight", () => {
+  const created = [{ start: Date.parse("2026-10-29T15:50:00Z"), end: Date.parse("2026-10-29T16:20:00Z") }];
+  const days = landingDays({ created, tz: "Asia/Shanghai" });
+  assert.deepEqual(days.map((entry) => entry.day), ["2026-10-29", "2026-10-30"]);
+  assert.deepEqual(days.map((entry) => entry.minutes), [10, 20]);
+  assert.equal(days.reduce((sum, entry) => sum + entry.minutes, 0), 30);
+});
+
+test("TC-S5 a shortened patch lands as a negative day", () => {
+  const previous = new Map([["p1", { start: Date.parse("2026-10-30T05:00:00Z"), end: Date.parse("2026-10-30T05:30:00Z") }]]);
+  const days = landingDays({
+    patched: [{ id: "p1", start: Date.parse("2026-10-30T05:00:00Z"), end: Date.parse("2026-10-30T05:18:00Z") }],
+    deleted: ["p2"],
+    previous: new Map([...previous, ["p2", { start: Date.parse("2026-10-30T06:00:00Z"), end: Date.parse("2026-10-30T06:10:00Z") }]]),
+    tz: "Asia/Shanghai",
+  });
+  assert.equal(days.length, 1);
+  assert.equal(days[0].day, "2026-10-30");
+  assert.equal(days[0].minutes, -22);
+  assert.equal(days[0].spans.length, 1);
+  assert.equal(days[0].spans[0].start, Date.parse("2026-10-30T05:00:00Z"));
+  assert.equal(days[0].spans[0].end, Date.parse("2026-10-30T05:18:00Z"));
+});
+
+test("TC-S6 landing days carry each day's total", async () => {
+  const { dir } = clockSandbox();
+  const now = Date.parse("2026-10-29T16:30:00Z");
+  const unit = {
+    key: "s1:2026-10-29T15:50:00.000Z",
+    runs: [{ startedAt: Date.parse("2026-10-29T15:50:00Z"), endedAt: Date.parse("2026-10-29T16:20:00Z") }],
+  };
+  const judged = [{ unit, result: { kind: "count" } }];
+  const { client } = fakeClock({
+    totals: [
+      { date: "2026-10-29", totalDuration: 480 * MINUTE, periodCount: 34 },
+      { date: "2026-10-30", totalDuration: 20 * MINUTE, periodCount: 1 },
+    ],
+  });
+  const outcome = await syncClock({
+    judged,
+    now,
+    cfg: { tz: "Asia/Shanghai", clock: { enabled: true, activityId: "a1" } },
+    dir,
+    client,
+    log: () => {},
+  });
+  assert.deepEqual(outcome.landing.map((entry) => [entry.day, entry.minutes, entry.total.minutes, entry.total.segments]), [
+    ["2026-10-29", 10, 480, 34],
+    ["2026-10-30", 20, 20, 1],
+  ]);
+  assert.deepEqual(outcome.todayAfter, { minutes: 20, segments: 1 });
 });

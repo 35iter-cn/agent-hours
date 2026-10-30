@@ -17,6 +17,7 @@ import {
   subtractCoverage,
   pruneMissing,
   pruneSynced,
+  splitAtMidnight,
   unionSegments,
 } from "../../src/clock.mjs";
 
@@ -556,4 +557,17 @@ test("TC-C25 a raised minimum length does not turn a crossing record into a dele
   assert.equal(plan.targets.length, 1);
   assert.deepEqual(plan.remove, []);
   assert.deepEqual(plan.patch, []);
+});
+
+test("TC-C26 a segment splits at the local midnight", () => {
+  const parts = splitAtMidnight(at("2026-10-29T15:50:00Z"), at("2026-10-29T16:20:00Z"), TZ);
+  assert.deepEqual(parts.map((part) => part.day), ["2026-10-29", "2026-10-30"]);
+  assert.equal(parts[0].end - parts[0].start, 10 * MIN);
+  assert.equal(parts[1].end - parts[1].start, 20 * MIN);
+
+  const whole = splitAtMidnight(at("2026-10-29T02:00:00Z"), at("2026-10-29T03:00:00Z"), TZ);
+  assert.equal(whole.length, 1);
+  assert.equal(whole[0].day, "2026-10-29");
+  assert.equal(whole[0].start, at("2026-10-29T02:00:00Z"));
+  assert.equal(whole[0].end, at("2026-10-29T03:00:00Z"));
 });
