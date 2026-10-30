@@ -944,14 +944,12 @@ export function landingDays({ created = [], patched = [], deleted = [], previous
     .map((entry) => ({ ...entry, spans: unionSegments(entry.spans, 0) }));
 }
 
-export async function readDayTotal(client, { now, tz }) {
+export async function readDayTotals(client, { now, tz }) {
   if (!client) return null;
-  const res = await client.daily({ start: now - 36 * 3_600_000, end: now + 3_600_000, tz });
+  const res = await client.daily({ start: now - 50 * 3_600_000, end: now + 3_600_000, tz });
   if (!res?.ok) return null;
   const rows = Array.isArray(res.data) ? res.data : (res.data?.days ?? []);
-  const today = rows.find((row) => row.date === dayKey(now, tz));
-  if (!today) return { minutes: 0, segments: 0 };
-  return { minutes: Math.round((today.totalDuration ?? 0) / 60_000), segments: today.periodCount ?? 0 };
+  return new Map(rows.map((row) => [row.date, { minutes: Math.round((row.totalDuration ?? 0) / 60_000), segments: row.periodCount ?? 0 }]));
 }
 
 export async function syncClock({
@@ -1005,7 +1003,8 @@ export async function syncClock({
   }
 
   const api = client ?? createClockClient({ baseUrl: clockCfg.baseUrl, apiKey });
-  const todayBefore = await readDayTotal(api, { now, tz: clockCfg.tz });
+  const beforeTotals = await readDayTotals(api, { now, tz: clockCfg.tz });
+  const todayBefore = beforeTotals ? (beforeTotals.get(dayKey(now, clockCfg.tz)) ?? { minutes: 0, segments: 0 }) : null;
   let activityId = clockCfg.activityId;
   if (!activityId) {
     const listed = await api.activities();
@@ -1111,8 +1110,12 @@ export async function syncClock({
 
   appendEvent({ event: "clock_round", ...summary, created: created.length, patched: patched.length, deleted: deleted.length }, { dir: logDir, now, tz: cfg.tz });
   const line = `写 ${created.length + patched.length} 段 / 删 ${deleted.length}${plan.covered.length ? ` / 人工已记 ${plan.covered.length} 段（${formatDuration(plan.coveredMinutes)}）` : ""} / 冲突 ${summary.conflict}${summary.conflictMinutes ? `（${formatDuration(summary.conflictMinutes)}）` : ""}${summary.blocked.length ? ` / 超限跳过 ${summary.blocked.map((item) => item.day).join(",")}` : ""}`;
-  const todayAfter = await readDayTotal(api, { now, tz: clockCfg.tz });
-  return { summary, line, todayBefore, todayAfter };
+  const totals = await readDayTotals(api, { now, tz: clockCfg.tz });
+  const todayAfter = totals ? (totals.get(dayKey(now, clockCfg.tz)) ?? { minutes: 0, segments: 0 }) : null;
+  const previous = new Map(Object.values(synced).flat().map((item) => [item.id, item]));
+  const landing = landingDays({ created, patched, deleted, previous, tz: clockCfg.tz })
+    .map((entry) => ({ ...entry, total: totals?.get(entry.day) ?? null }));
+  return { summary, line, todayBefore, todayAfter, landing };
 }
 
 async function fetchLivePeriods(api, { from, to }) {

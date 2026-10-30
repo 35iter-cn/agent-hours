@@ -21,12 +21,13 @@ import {
   readOpenRuns,
   readRecords,
   dedupeRuns,
-  readDayTotal,
+  readDayTotals,
   formatDelta,
   run,
   runHash,
   runState,
   setOverride,
+  syncClock,
   unitHash,
   unitState,
   hydrateContext,
@@ -914,7 +915,7 @@ test("one unit is judged exactly once across the open to closed transition", asy
   assert.deepEqual(Object.values(after.units).map((entry) => entry.hash), Object.values(before.units).map((entry) => entry.hash));
 });
 
-test("readDayTotal reads today's total from the daily endpoint", async () => {
+test("readDayTotals maps every day in the window", async () => {
   const now = Date.parse("2026-10-24T05:00:00.000Z");
   const calls = [];
   const client = {
@@ -923,16 +924,13 @@ test("readDayTotal reads today's total from the daily endpoint", async () => {
       return { ok: true, data: [{ date: "2026-10-24", totalDuration: 158 * MINUTE, periodCount: 8 }] };
     },
   };
-  const total = await readDayTotal(client, { now, tz: "Asia/Shanghai" });
-  assert.deepEqual(total, { minutes: 158, segments: 8 });
+  const totals = await readDayTotals(client, { now, tz: "Asia/Shanghai" });
+  assert.deepEqual(totals.get("2026-10-24"), { minutes: 158, segments: 8 });
   assert.equal(calls.length, 1);
   assert.equal(calls[0].tz, "Asia/Shanghai");
 
-  const empty = { async daily() { return { ok: true, data: [{ date: "2026-10-23", totalDuration: 10 * MINUTE, periodCount: 1 }] }; } };
-  assert.deepEqual(await readDayTotal(empty, { now, tz: "Asia/Shanghai" }), { minutes: 0, segments: 0 });
-
   const broken = { async daily() { return { ok: false, code: "server" }; } };
-  assert.equal(await readDayTotal(broken, { now, tz: "Asia/Shanghai" }), null);
+  assert.equal(await readDayTotals(broken, { now, tz: "Asia/Shanghai" }), null);
 });
 
 test("the report leads with today's total and this round's delta", () => {
@@ -1130,4 +1128,33 @@ test("TC-S5 a shortened patch lands as a negative day", () => {
   assert.equal(days[0].spans.length, 1);
   assert.equal(days[0].spans[0].start, Date.parse("2026-10-30T05:00:00Z"));
   assert.equal(days[0].spans[0].end, Date.parse("2026-10-30T05:18:00Z"));
+});
+
+test("TC-S6 landing days carry each day's total", async () => {
+  const { dir } = clockSandbox();
+  const now = Date.parse("2026-10-29T16:30:00Z");
+  const unit = {
+    key: "s1:2026-10-29T15:50:00.000Z",
+    runs: [{ startedAt: Date.parse("2026-10-29T15:50:00Z"), endedAt: Date.parse("2026-10-29T16:20:00Z") }],
+  };
+  const judged = [{ unit, result: { kind: "count" } }];
+  const { client } = fakeClock({
+    totals: [
+      { date: "2026-10-29", totalDuration: 480 * MINUTE, periodCount: 34 },
+      { date: "2026-10-30", totalDuration: 20 * MINUTE, periodCount: 1 },
+    ],
+  });
+  const outcome = await syncClock({
+    judged,
+    now,
+    cfg: { tz: "Asia/Shanghai", clock: { enabled: true, activityId: "a1" } },
+    dir,
+    client,
+    log: () => {},
+  });
+  assert.deepEqual(outcome.landing.map((entry) => [entry.day, entry.minutes, entry.total.minutes, entry.total.segments]), [
+    ["2026-10-29", 10, 480, 34],
+    ["2026-10-30", 20, 20, 1],
+  ]);
+  assert.deepEqual(outcome.todayAfter, { minutes: 20, segments: 1 });
 });
