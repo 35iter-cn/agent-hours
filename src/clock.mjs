@@ -30,6 +30,33 @@ export function dayKey(ms, tz) {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 }
 
+export function splitAtMidnight(start, end, tz) {
+  const out = [];
+  let from = start;
+  while (from < end) {
+    const day = dayKey(from, tz);
+    const to = Math.min(end, midnightAfter(from, tz));
+    out.push({ day, start: from, end: to });
+    from = to;
+  }
+  return out;
+}
+
+function midnightAfter(ms, tz) {
+  const parts = new Intl.DateTimeFormat("en-GB", {
+    timeZone: tz,
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(new Date(ms));
+  const pick = (type) => Number(parts.find((part) => part.type === type)?.value ?? 0);
+  const remaining = (1440 - (pick("hour") * 60 + pick("minute"))) * MINUTE_MS;
+  let next = ms - (ms % MINUTE_MS) + remaining;
+  while (next <= ms + 24 * HOUR_MS && dayKey(next - 1, tz) === dayKey(ms, tz)) next += MINUTE_MS;
+  while (next > ms && dayKey(next - MINUTE_MS, tz) !== dayKey(ms, tz)) next -= MINUTE_MS;
+  return next;
+}
+
 export function runSegments(runs) {
   return runs
     .filter((run) => Number.isFinite(run.startedAt) && Number.isFinite(run.endedAt) && run.endedAt > run.startedAt)
