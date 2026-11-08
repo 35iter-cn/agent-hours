@@ -74,11 +74,27 @@ human reading the reply and thinking before the next turn.
 `decay` produces more, shorter segments than `stitch` on the same ledger; that is
 expected, because an unbridged gap becomes a real hole in the timesheet.
 
-The notify line follows the plan's landing dates. A round that only writes today
-collapses to `本轮 +48 分钟 · 记在 14:02–14:50`; a round that also writes an earlier
-day lists every day it touched, each with its own delta, span and running total,
-so the morning notice for a round that ran past midnight still says which day the
-minutes belong to.
+The notify body never repeats the title: `agent-relay` prepends `📣📣📣 工时`
+itself, so the body opens with the bold day and time, then one totals line whose
+two numbers are the only bold text, then the unit counts and the Clock summary on
+a single line:
+
+```
+**11-08 周日 13:00**
+累计 **1 小时 24 分**（9 段） · 本轮 **+25 分**
+单元 3 新 · 1 计入 · 2 不计 · Clock 新增 4 段
+时段 11:12–11:16、…、12:57–13:09（等 4 段）
+```
+
+Minutes in the report keep their remainder (`1 小时 24 分`), so a total and the
+delta below it never mix units — `formatDuration` still rounds to one decimal for
+the plan and digest lines.
+
+The span follows the plan's landing dates. A round that only writes today keeps
+its spans on the last line; a round that also writes an earlier day lists every
+day it touched, each with its own delta, span and running total, so the morning
+notice for a round that ran past midnight still says which day the minutes belong
+to.
 
 ## Dry runs
 
