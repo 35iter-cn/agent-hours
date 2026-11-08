@@ -204,7 +204,7 @@ test("a run judges, notifies once and records the notified hash", async () => {
   assert.equal(first.fresh.length, 1);
   assert.equal(first.delivered, true);
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /\*\*工时\*\*/);
+  assert.match(sent[0], /^\*\*10-24 周六 10:00\*\*$/m);
 
   const decisions = JSON.parse(readFileSync(path.join(dir, "decisions.json"), "utf8"));
   assert.equal(decisions.version, 2);
@@ -301,8 +301,7 @@ test("a clock-only round still produces a report", () => {
     now: Date.parse("2026-10-24T13:00:00.000Z"),
     clock: { created: 0, patched: 2, deleted: 1, conflict: 0, conflictMinutes: 0, failed: 0, blocked: [] },
   });
-  assert.match(report, /本轮无新增单元/);
-  assert.match(report, /Clock 改 2 段 · 删 1 段/);
+  assert.match(report, /无新增单元 · Clock 改 2 段 · 删 1 段/);
   assert.equal(formatReport([], { tz: DEFAULTS.tz }), "");
 });
 
@@ -394,7 +393,7 @@ test("dry run writes nothing and leaves a v1 cache untouched", async () => {
   ]);
   const outcome = await run({ now, dir, judge, dryRun: true, notifyImpl: () => ({ ok: true }) });
   assert.equal(outcome.fresh.length, 1);
-  assert.ok(outcome.report.includes("**工时**"));
+  assert.match(outcome.report, /^\*\*\d\d-\d\d 周. \d\d:\d\d\*\*$/m);
   assert.equal(readFileSync(path.join(dir, "decisions.json"), "utf8"), JSON.stringify(v1));
   assert.equal(existsSync(path.join(dir, "decisions.v1.bak.json")), false);
   assert.equal(existsSync(path.join(dir, "digest")), false);
@@ -488,9 +487,9 @@ test("report is a summary: verdict counts, counted minutes and where the review 
   );
   const lines = report.split("\n");
   assert.equal(lines.length, 3);
-  assert.match(lines[0], /^\*\*工时\*\* 2026-10-24 10:00$/);
-  assert.match(lines[1], /新增 2 单元 · 计入 1 · 不计 0 · 待确认 1/);
-  assert.match(lines[2], /计入时长 10 分钟/);
+  assert.match(lines[0], /^\*\*10-24 周六 10:00\*\*$/);
+  assert.match(lines[1], /单元 2 新 · 1 计入 · 0 不计 · 1 待确认/);
+  assert.match(lines[2], /计入时长 10 分/);
 });
 
 test("durations switch to hours once they pass an hour", () => {
@@ -515,8 +514,8 @@ test("a report longer than an hour shows hours instead of raw minutes", () => {
       clock: { created: 1, patched: 0, deleted: 0, conflict: 1, conflictMinutes: 75, failed: 0, blocked: [] },
     },
   );
-  assert.match(report, /计入时长 1\.2 小时/);
-  assert.match(report, /冲突 1\.3 小时/);
+  assert.match(report, /计入时长 1 小时 10 分/);
+  assert.match(report, /冲突 1 小时 15 分/);
 });
 
 test("a report without review units omits the review count and adds the clock summary", () => {
@@ -530,10 +529,10 @@ test("a report without review units omits the review count and adds the clock su
     },
   );
   const lines = report.split("\n");
-  assert.equal(lines.length, 4);
-  assert.match(lines[0], /2026-10-24 21:00/);
-  assert.doesNotMatch(lines[1], /待确认/);
-  assert.equal(lines[3], "Clock 新增 1 段 · 改 2 段 · 冲突 29 分钟");
+  assert.equal(lines.length, 3);
+  assert.match(lines[0], /10-24 周六 21:00/);
+  assert.equal(lines[1], "单元 1 新 · 1 计入 · 0 不计 · Clock 新增 1 段 · 改 2 段 · 冲突 29 分");
+  assert.equal(lines[2], "计入时长 10 分");
 });
 
 test("a manual override wins over both the cached verdict and a fresh judge call", async () => {
@@ -933,7 +932,7 @@ test("readDayTotals maps every day in the window", async () => {
   assert.equal(await readDayTotals(broken, { now, tz: "Asia/Shanghai" }), null);
 });
 
-test("TC-S7 a single landing day on today collapses to one line", () => {
+test("TC-S7 a single landing day on today keeps the total and the span apart", () => {
   const now = Date.parse("2026-10-30T06:00:00Z");
   const report = formatReport([], {
     tz: "Asia/Shanghai",
@@ -942,10 +941,11 @@ test("TC-S7 a single landing day on today collapses to one line", () => {
     today: { minutes: 192, segments: 7 },
     landing: [{ day: "2026-10-30", minutes: 48, spans: [{ start: Date.parse("2026-10-30T06:02:00Z"), end: Date.parse("2026-10-30T06:50:00Z") }], total: { minutes: 192, segments: 7 } }],
   });
-  assert.match(report, /10-30 累计 3\.2 小时（7 段）/);
-  assert.match(report, /本轮 \+48 分钟 · 记在 14:02–14:50/);
+  assert.match(report, /累计 \*\*3 小时 12 分\*\*（7 段） · 本轮 \*\*\+48 分\*\*/);
+  assert.match(report, /时段 14:02–14:50/);
   assert.equal(report.includes("• "), false);
-  assert.equal(formatDelta(-12), "−12 分钟");
+  assert.equal(formatDelta(-12), "−12 分");
+  assert.equal(formatDelta(95), "+1 小时 35 分");
 });
 
 test("TC-S8 two landing days list each day once", () => {
@@ -960,10 +960,37 @@ test("TC-S8 two landing days list each day once", () => {
       { day: "2026-10-30", minutes: 20, spans: [{ start: Date.parse("2026-10-29T16:10:00Z"), end: Date.parse("2026-10-29T16:30:00Z") }], total: { minutes: 20, segments: 1 } },
     ],
   });
-  assert.match(report, /本轮 \+55 分钟，记在 2 天/);
-  assert.match(report, /• 2026-10-29 · \+35 分钟 · 22:24–23:00 · 累计 8\.8 小时（34 段）/);
-  assert.match(report, /• 2026-10-30 · \+20 分钟 · 00:10–00:30 · 累计 20 分钟（1 段）/);
-  assert.equal(report.includes("2026-10-30 累计"), false);
+  assert.match(report, /本轮 \*\*\+55 分\*\*，记在 2 天/);
+  assert.match(report, /• 2026-10-29 · \+35 分 · 22:24–23:00 · 累计 8 小时 48 分（34 段）/);
+  assert.match(report, /• 2026-10-30 · \+20 分 · 00:10–00:30 · 累计 20 分（1 段）/);
+  assert.equal(report.includes("10-30 累计"), false);
+});
+
+test("TC-S10 the body leaves the title to the relay and bolds only the numbers", () => {
+  const now = Date.parse("2026-11-08T05:00:00Z");
+  const span = (from, to) => [{ start: Date.parse(`2026-11-08T${from}:00Z`), end: Date.parse(`2026-11-08T${to}:00Z`) }];
+  const unit = buildUnits([rec("2026-11-08T03:12:00.000Z", 25)])[0];
+  const report = formatReport(
+    [{ unit, result: { kind: "count", p: { count: 0.9 }, margin: 0.8 } }],
+    {
+      tz: "Asia/Shanghai",
+      now,
+      clock: { created: 4, patched: 0, deleted: 0 },
+      today: { minutes: 84, segments: 9 },
+      landing: [{
+        day: "2026-11-08",
+        minutes: 25,
+        spans: [...span("03:12", "03:16"), ...span("03:30", "03:41"), ...span("04:02", "04:20"), ...span("04:57", "05:09")],
+        total: { minutes: 84, segments: 9 },
+      }],
+    },
+  );
+  const lines = report.split("\n");
+  assert.equal(report.includes("工时"), false);
+  assert.equal(lines[0], "**11-08 周日 13:00**");
+  assert.equal(lines[1], "累计 **1 小时 24 分**（9 段） · 本轮 **+25 分**");
+  assert.equal(lines[2], "单元 1 新 · 1 计入 · 0 不计 · Clock 新增 4 段");
+  assert.equal(lines[3], "时段 11:12–11:16、…、12:57–13:09（等 4 段）");
 });
 
 test("TC-S9 a day without a total drops the running total", () => {
@@ -976,9 +1003,8 @@ test("TC-S9 a day without a total drops the running total", () => {
   };
   const spans = [{ start: Date.parse("2026-10-29T14:24:00Z"), end: Date.parse("2026-10-29T15:00:00Z") }];
   const withTotal = formatReport([], { ...base, landing: [{ day: "2026-10-29", minutes: 35, spans, total: { minutes: 528, segments: 34 } }] });
-  assert.match(withTotal, /10-30 累计 0 分钟（0 段）/);
-  assert.match(withTotal, /本轮 \+35 分钟/);
-  assert.match(withTotal, /• 2026-10-29 · \+35 分钟 · 22:24–23:00 · 累计 8\.8 小时（34 段）/);
+  assert.match(withTotal, /累计 \*\*0 分\*\*（0 段） · 本轮 \*\*\+35 分\*/);
+  assert.match(withTotal, /• 2026-10-29 · \+35 分 · 22:24–23:00 · 累计 8 小时 48 分（34 段）/);
 
   const without = formatReport([], { ...base, landing: [{ day: "2026-10-29", minutes: 35, spans, total: null }] });
   assert.doesNotMatch(without, /• 2026-10-29[^\n]*累计/);
@@ -990,7 +1016,7 @@ test("TC-S9 a day without a total drops the running total", () => {
     landing: [{ day: "2026-10-30", minutes: -12, spans: [] }],
   });
   assert.doesNotMatch(removed, /记在/);
-  assert.match(removed, /本轮 −12 分钟/);
+  assert.match(removed, /本轮 \*\*−12 分\*\*/);
 });
 
 test("TC-S1 a salvaged record wins once the real closing record arrives", () => {
@@ -1112,7 +1138,8 @@ test("TC-D2 the report no longer splits execution and gaps", () => {
     landing: [{ day: "2026-10-24", minutes: 30, spans: [{ start: Date.parse("2026-10-24T01:30:00Z"), end: Date.parse("2026-10-24T02:00:00Z") }], total: { minutes: 120, segments: 2 } }],
   });
   assert.equal(report.includes("间隙"), false);
-  assert.match(report, /本轮 \+30 分钟 · 记在 09:30–10:00/);
+  assert.match(report, /本轮 \*\*\+30 分\*\*/);
+  assert.match(report, /时段 09:30–10:00/);
 });
 
 test("TC-D3 --dry-run-clock writes no event stream and no clock plan", async () => {
@@ -1121,7 +1148,7 @@ test("TC-D3 --dry-run-clock writes no event stream and no clock plan", async () 
   const { client, state } = fakeClock({ totals: TODAY_TOTAL });
   const sent = [];
   const outcome = await run({ now, dir, judge, clockClient: client, dryRunClock: true, notifyImpl: (text) => (sent.push(text), { ok: true }) });
-  assert.ok(outcome.report.includes("**工时**"));
+  assert.match(outcome.report, /^\*\*\d\d-\d\d 周. \d\d:\d\d\*\*$/m);
   assert.equal(existsSync(path.join(dir, "logs")), false);
   assert.equal(state.periods.length, 0);
   assert.equal(sent.length, 0);

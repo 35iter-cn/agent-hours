@@ -586,6 +586,16 @@ export function formatDay(ms, tz) {
   return `${pick("year")}-${pick("month")}-${pick("day")}`;
 }
 
+const WEEKDAYS = ["周日", "周一", "周二", "周三", "周四", "周五", "周六"];
+const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+
+export function formatStamp(ms, tz) {
+  const parts = new Intl.DateTimeFormat("en-US", { timeZone: tz, month: "2-digit", day: "2-digit", weekday: "short" }).formatToParts(new Date(ms));
+  const pick = (type) => parts.find((part) => part.type === type)?.value ?? "";
+  const day = WEEKDAYS[WEEKDAY_INDEX[pick("weekday")]] ?? "";
+  return `${pick("month")}-${pick("day")} ${day} ${formatClock(ms, tz)}`;
+}
+
 function formatSpans(spans, tz) {
   const list = Array.isArray(spans) ? spans : [];
   if (!list.length) return "";
@@ -608,10 +618,18 @@ export function formatDuration(minutes) {
   return `${hours.toFixed(1).replace(/\.0$/, "")} 小时`;
 }
 
+function formatSpannedDuration(minutes) {
+  const total = Math.max(0, Math.round(Number(minutes) || 0));
+  if (total < 60) return `${total} 分`;
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  return rest ? `${hours} 小时 ${rest} 分` : `${hours} 小时`;
+}
+
 export function formatDelta(minutes) {
   const total = Math.round(Number(minutes) || 0);
-  if (total === 0) return "±0 分钟";
-  return total > 0 ? `+${formatDuration(total)}` : `−${formatDuration(-total)}`;
+  if (total === 0) return "±0 分";
+  return total > 0 ? `+${formatSpannedDuration(total)}` : `−${formatSpannedDuration(-total)}`;
 }
 
 export function formatEntry(unit, result, { tz }) {
@@ -643,44 +661,48 @@ export function formatReport(fresh, { tz, now = Date.now(), clock = null, today 
           : item.unit.runs;
         return sum + runs.reduce((inner, run) => inner + run.durationMs / 60_000, 0);
       }, 0);
-  const lines = [`**工时** ${formatDay(now, tz)} ${formatClock(now, tz)}`];
+  const lines = [`**${formatStamp(now, tz)}**`];
   const todayKey = formatDay(now, tz);
   const days = Array.isArray(landing) ? landing : [];
   const only = days.length === 1 ? days[0] : null;
   const landed = days.reduce((sum, entry) => sum + entry.minutes, 0);
-  const todayTotal = today ? `${todayKey} 累计 ${formatDuration(today.minutes)}（${today.segments} 段）` : null;
-  if (only && only.day === todayKey) {
-    if (todayTotal) lines.push(todayTotal);
-    const spans = only.spans?.length ? ` · 记在 ${formatSpans(only.spans, tz)}` : "";
-    lines.push(`本轮 ${formatDelta(only.minutes)}${spans}`);
-  } else if (days.length) {
-    if (!days.some((entry) => entry.day === todayKey) && todayTotal) lines.push(todayTotal);
-    lines.push(`本轮 ${formatDelta(landed)}${days.length > 1 ? `，记在 ${days.length} 天` : ""}`);
+  const singleToday = Boolean(only && only.day === todayKey);
+  const totals = [];
+  if (today) totals.push(`累计 **${formatSpannedDuration(today.minutes)}**（${today.segments} 段）`);
+  if (singleToday) totals.push(`本轮 **${formatDelta(only.minutes)}**`);
+  else if (days.length) totals.push(`本轮 **${formatDelta(landed)}**${days.length > 1 ? `，记在 ${days.length} 天` : ""}`);
+  if (totals.length) lines.push(totals.join(" · "));
+  if (days.length && !singleToday) {
     for (const entry of days) {
       const spans = entry.spans?.length ? ` · ${formatSpans(entry.spans, tz)}` : "";
-      const total = entry.total ? ` · 累计 ${formatDuration(entry.total.minutes)}（${entry.total.segments} 段）` : "";
+      const total = entry.total ? ` · 累计 ${formatSpannedDuration(entry.total.minutes)}（${entry.total.segments} 段）` : "";
       lines.push(`• ${entry.day} · ${formatDelta(entry.minutes)}${spans}${total}`);
     }
-  } else if (todayTotal) {
-    lines.push(todayTotal);
   }
+  const parts = [];
   if (fresh.length) {
-    lines.push(`新增 ${fresh.length} 单元 · 计入 ${counts.count ?? 0} · 不计 ${counts.skip ?? 0}${counts.review ? ` · 待确认 ${counts.review}` : ""}${splitCount ? ` · 拆分 ${splitCount}` : ""}`);
+    parts.push(`单元 ${fresh.length} 新`);
+    parts.push(`${counts.count ?? 0} 计入`);
+    parts.push(`${counts.skip ?? 0} 不计`);
+    if (counts.review) parts.push(`${counts.review} 待确认`);
+    if (splitCount) parts.push(`${splitCount} 拆分`);
   } else {
-    lines.push("本轮无新增单元");
+    parts.push("无新增单元");
   }
-  if (!today && fresh.length) lines.push(`计入时长 ${formatDuration(countedMinutes)}`);
   if (clock) {
     const bits = [];
     if (clock.created) bits.push(`新增 ${clock.created} 段`);
     if (clock.patched) bits.push(`改 ${clock.patched} 段`);
     if (clock.deleted) bits.push(`删 ${clock.deleted} 段`);
-    if (clock.covered) bits.push(`人工已记 ${formatDuration(clock.coveredMinutes)}`);
-    if (clock.conflict) bits.push(`冲突 ${formatDuration(clock.conflictMinutes)}`);
+    if (clock.covered) bits.push(`人工已记 ${formatSpannedDuration(clock.coveredMinutes)}`);
+    if (clock.conflict) bits.push(`冲突 ${formatSpannedDuration(clock.conflictMinutes)}`);
     if (clock.failed) bits.push(`失败 ${clock.failed}`);
     if (clock.blocked?.length) bits.push(`超限跳过 ${clock.blocked.length} 天`);
-    if (bits.length) lines.push(`Clock ${bits.join(" · ")}`);
+    if (bits.length) parts.push(`Clock ${bits.join(" · ")}`);
   }
+  lines.push(parts.join(" · "));
+  if (!today && fresh.length) lines.push(`计入时长 ${formatSpannedDuration(countedMinutes)}`);
+  if (singleToday && only.spans?.length) lines.push(`时段 ${formatSpans(only.spans, tz)}`);
   return lines.join("\n");
 }
 
